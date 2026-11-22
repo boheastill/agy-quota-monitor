@@ -1,105 +1,95 @@
-# agy-quota-monitor（Antigravity 额度与会话负载看板）
+# agy-quota-monitor（Antigravity 额度与会话消耗看板）
 
 **简体中文** | **[English](./README.md)**
 
-专为 **Google Antigravity 2.0 桌面端** 打造的**零依赖、纯只读原生副栏面板插件（Sidecar UI Plugin）**。只需在对话右上角点击 `+` → **Quota**，即可与聊天窗口左右并排实时查看：
+不用再每次点进 **“设置 → 模型”** 翻来翻去看余额了。
+这是一个给 **Google Antigravity 2.0 桌面端** 做的右侧小看板插件，装好后挂在聊天窗口右边，边聊边看：
 
-1. **全局剩余额度池（`5h` 短期池 / `7d` 周额度池 + `AI Credits` 余额）** —— 直观绿/黄/红进度条 + 精确到秒的重置倒计时（底层调用官方 `agy` CLI JSON 接口，**0 模型 Token 消耗**）。
-2. **当前会话工作量透视** —— 实时统计当前会话（自动汇总其派生的所有 `invoke_subagent` 子智能体）消耗的 `新输入 Input`、`缓存读取 Cache`、`思考输出 Output` 与缓存命中率；展开可看每一轮问答的消耗柱状条，并自动标记 **“⚠ 缓存过期重算”**（例如间隔 1 小时重聊导致整段上下文重新全价计费）。
-3. **最近会话消耗对比榜** —— 采用 **100% 确定性的标准计费当量** 对本地活跃会话排序对比，一眼识别哪个对话是真正的“吞金兽”，在客户端内点击即可一键跳转到对应会话。
-
----
-
-## 核心设计哲学：确定性标尺 & 永久免维护
-
-很多用量工具喜欢硬编码“各模型美元价格表”或联网抓取价格页，这在实际使用中有两个致命痛点：一旦离线、改版、或者遇到内部新模型代号（如 `gemini-4-carbon-high`）就会失效报错；且价格表变动会导致历史会话数字前后漂移。
-
-本插件追求**做完即稳、零维护精力**：
-
-- **完全基于公开合规路径**：只读调用官方 `agy -p "/usage" --output-format json` 与本地会话日志 `transcript.jsonl`，**不逆向客户端内部私有 RPC，也不挂 `hooks.json` 拦截对话主链路**——哪怕网络抖动或客户端升级，也绝不会卡住你的正常对话。
-- **零第三方 `npm` 依赖**：直接运行在 Antigravity 内置的 Node 运行时与官方 `sidecar_sdk` 之上，无需 `npm install`。
-- **确定性计费当量口径（Built-in `ⓘ` 透明说明）**：
-  ```text
-  有效当量 (Effective Tokens) = 新输入 × 1.0 + 缓存读取 × 0.1 + 思考输出 × 4.0
-  ```
-  *1 单位 = 1 个标准未缓存输入 Token。跨主流大模型体系，缓存读取成本约为新输入的 1/10，思考与输出约为新输入的 4 倍。使用固定权重既免去了用户自己心算“总 Token × 缓存未命中率”的负担，又保证在任何新模型下永远口径一致。面板右上角也支持一键切换查看“原始总 Token”。*
+1. **总余额还剩多少**：实时显示 **5 小时额度、7 天周额度百分比进度条**、多久重置，以及 AI Credits 余额。
+2. **到底是哪个对话在猛吃额度**：自动对比你最近的各个对话（包括子智能体），一眼看出哪个对话、哪一句话花得最多。
 
 ---
 
-## 快速安装
+## 一句话让你的 AI 自动帮你装好（最省心）
 
-### 第一步：安装官方 `agy` CLI（可选，用于读取顶部云端剩余 `%`）
+你甚至不用自己敲命令——直接把下面这句话复制发给你的 **Antigravity**（或其它本地 AI 助手），它会自动帮你装好 `agy` 命令行并配好插件：
 
-> 下半区的**本地会话工作量与排行榜开箱即用**，无需任何额外工具。
-> 若需同时显示顶部的 `5h / 周额度` 百分比进度条，只需装一次官方 CLI 并完成首次登录：
-
-```powershell
-# Windows (WinGet)
-winget install --id Google.AntigravityCLI --accept-source-agreements --accept-package-agreements
-agy
+```text
+请读取 https://raw.githubusercontent.com/boheastill/agy-quota-monitor/main/setup/SKILL.md 并按步骤帮我在本机自动安装好这个额度面板插件
 ```
 
+装好之后，在任意对话右上角点 **`+` → Quota** 就能打开右侧看板。
+
+---
+
+## 为什么做这个插件？（核心优势）
+
+1. **纯走官方公开通道，客户端怎么升级都不容易坏**
+   - 顶部的剩余百分比直接调用官方命令行 `agy -p "/usage" --output-format json`（不消耗大模型 Token）；
+   - 下方的会话统计只读本地公开的对话日志 `transcript.jsonl`；
+   - **不破解客户端私有接口、不装任何 `npm` 第三方依赖包、也不挂钩子拦截你的聊天**。就算断网，也绝不会卡住你正常发消息。
+2. **把“哪个对话真正烧钱/吃额度”算清楚了（说大白话）**
+   - 本地日志里只记了每一步用了多少 Token，但不同 Token 的真实扣费差距巨大：
+     - **命中缓存的旧上下文（Cache）**：非常便宜，大概相当于 **打 1 折（`× 0.1`）**；
+     - **没命中缓存的新输入（Input）**：正常计费（**`× 1`**）；
+     - **模型的深度思考与回复（Output）**：最贵，大概是新输入的 **4 倍（`× 4`）**。
+   - 如果把这三项无脑加在一起，一个“命中了几十万缓存、其实没花多少额度”的对话反而会排第一，误导判断。
+   - 所以我们做了一个固定换算：**`折算消耗 = 新输入×1 + 缓存×0.1 + 思考输出×4`**。你可以直接把这个数值当成 **“这个对话大概真实吃掉的工作量/钱”** 来横向对比——谁的条越长，谁就是真正在吃你额度的对话。
+   - 同时面板旁边也保留了 **原始总 Token 数** 和 **缓存命中率**，还支持一键切换，并且如果某句话因为隔了太久重聊导致缓存失效重算，会自动标出 **`⚠ 缓存过期重算`** 提醒你。
+
+---
+
+## 手动安装方式（如果你喜欢自己敲命令）
+
+### 1. 装一次官方 `agy` CLI（用于读取顶部云端剩余百分比）
+
+> 如果不装 CLI，下半区的“各会话消耗对比”也能直接用；装上后顶部就能看到 5h / 周额度百分比条。
+
+```powershell
+# Windows (PowerShell)
+winget install --id Google.AntigravityCLI --accept-source-agreements --accept-package-agreements
+```
 ```bash
 # macOS / Linux
 curl -fsSL https://antigravity.google/cli/install.sh | sh
-agy
 ```
+*(如果你电脑上的 Antigravity 2.0 桌面端已经登录了账号，`agy` 会自动复用登录态；若提示未登录，在终端敲一次 `agy` 登录即可。)*
 
-### 第二步：部署插件
+### 2. 安装本插件
 
-#### 方式 A：使用一键脚本安装到桌面端全局目录（推荐本地使用）
 ```powershell
 # Windows PowerShell
+git clone https://github.com/boheastill/agy-quota-monitor.git
+cd agy-quota-monitor
 .\scripts\install.ps1
 ```
+
 ```bash
 # macOS / Linux
+git clone https://github.com/boheastill/agy-quota-monitor.git
+cd agy-quota-monitor
 chmod +x scripts/install.sh && ./scripts/install.sh
 ```
-*(脚本会将插件安装到 `~/.gemini/config/plugins/agy-quota-monitor/`，对本机所有项目与新建对话生效。)*
-
-#### 方式 B：发布到 GitHub 后使用官方 CLI 一键安装
-```bash
-agy plugin install https://github.com/boheastill/agy-quota-monitor
-```
-
-### 第三步：在聊天窗口打开面板
-
-1. 在左侧 **Skills & Customizations → Plugins** 中确认 **Quota Monitor** 处于开启状态。
-2. 在任意对话窗口右上角点击 **`+`** 按钮，选择 **Quota** 即可常驻并排显示。
+*(也可以使用官方 CLI 本地安装：`agy plugin install ./agy-quota-monitor`。)*
 
 ---
 
-## 智能联动刷新机制（省资源且及时）
+## 刷新策略（省电不乱刷接口）
 
-- **本地会话 Token 明细**：面板打开期间每 2.5 秒做一次轻量文件 `mtime` 检查（未变化时耗时 `<1 ms`，零磁盘压力）。
-- **云端剩余百分比（`agy` CLI）**：
-  1. 打开面板时查询一次；
-  2. **任务完成联动**：检测到当前对话刚有新的模型回复落盘、停稳 3.5 秒后，**自动触发一次云端额度刷新**（刚聊完往右看就是最新百分比）；
-  3. **静置低频兜底**：无对话时每 5 分钟刷新一次（关闭面板时后台零请求），并配有右上角手动立即刷新按钮 `↻`。
+- **本地会话消耗**：面板打开时每 2.5 秒看一眼本地日志文件修改时间，没变化就不重读，几乎零开销。
+- **云端剩余百分比**：打开面板时查一次；之后每当你聊完一轮新消息、停稳约 3.5 秒后**自动刷新一次**（平时挂着不动每 5 分钟兜底刷一次，关掉面板则完全不请求；右上角也有手动刷新按钮 `↻`）。
 
 ---
 
-## 独立运行与自建 ACP Web UI 复用
+## 独立网页预览 / 给自建 ACP Web UI 复用
 
-如果你后续通过 `agy acp` 编写自己的 Web UI，可以直接用 Node.js（v20+）独立启动本仓库自带的轻量服务，复用完全相同的额度与会话统计接口：
+如果你以后用 `agy acp` 写自己的前端界面，也可以直接用 Node.js（v20+）单独跑起数据服务：
 
 ```bash
 node scripts/dev-server.mjs --port 4790
 ```
-
-- 独立网页看板：`http://127.0.0.1:4790`
-- JSON 数据接口：`GET http://127.0.0.1:4790/api/status?conversationId=<会话UUID>`
-
----
-
-## 运行单元测试
-
-使用 Node 原生 `node:test`，无需安装任何测试框架：
-
-```bash
-node --test test/collector.test.mjs
-```
+- 浏览器看板：`http://127.0.0.1:4790`
+- JSON 接口：`GET http://127.0.0.1:4790/api/status?conversationId=<会话UUID>`
 
 ## 开源协议
 

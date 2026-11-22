@@ -46,16 +46,16 @@
           <h2 class="section-title" id="sec-current-title">当前会话工作量</h2>
           <button type="button" id="btn-formula-info" class="info-pill" aria-expanded="false" aria-controls="formula-popover">
             <span aria-hidden="true">ⓘ</span>
-            <span id="ui-formula-btn-label">计费当量口径</span>
+            <span id="ui-formula-btn-label">这个数值怎么算的？</span>
           </button>
         </div>
 
-        <!-- Deterministic Formula Explanation Popover -->
+        <!-- Plain-language Formula Explanation Popover -->
         <div id="formula-popover" class="formula-box hidden" role="region">
-          <div class="formula-title" id="ui-formula-title">确定性工作量标尺（零漂移口径）</div>
-          <code class="formula-code" id="ui-formula-expr">有效当量 = 新输入 × 1 + 缓存读取 × 0.1 + 思考输出 × 4</code>
+          <div class="formula-title" id="ui-formula-title">折算消耗说明（一眼对比哪个对话真正在花额度）</div>
+          <code class="formula-code" id="ui-formula-expr">折算消耗 = 新输入 × 1 + 缓存读取 × 0.1 + 思考输出 × 4</code>
           <p class="formula-desc" id="ui-formula-desc">
-            为什么采用固定权重而非联网抓价格表：缓存读取通常仅为新输入成本的 1/10，而思考与输出约为新输入的 4 倍。使用固定标准当量（1 单位 = 1 个标准未缓存输入 Token）可保证跨模型升级、离线环境及内部新模型下口径 100% 恒定，无需维护价格表也不会前后漂移。
+            命中缓存的历史上下文其实很便宜（按 1 折算），真正吃额度的是没命中缓存的新输入（1 倍）和模型的思考与回复（按 4 倍算）。按这个比例折算出来的数字，大概就代表每个对话真实花掉的额度/钱，方便直接横向对比谁吃得最多。
           </p>
         </div>
 

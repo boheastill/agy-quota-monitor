@@ -2,128 +2,94 @@
 
 **[简体中文文档](./README.zh-CN.md)** | **English**
 
-A zero-dependency, read-only **Sidecar UI Plugin** for **Google Antigravity 2.0** that sits natively in the conversation auxiliary pane (`+` menu → **Quota**), giving you instant visibility into:
+Stop clicking into **Settings → Models** just to check how much quota you have left.
+`agy-quota-monitor` adds a clean, live **Quota** side panel right next to your chat in **Google Antigravity 2.0** (`+` menu → **Quota**) so you can see at a glance:
 
-1. **Global Quota Pools (`5h` & `7d Weekly` + `AI Credits`)** — Live progress bars, status badges, and ticking reset countdowns via the official `agy` CLI (`--output-format json`, **0 LLM tokens consumed**).
-2. **Current Session Workload** — Real-time token breakdown (`Uncached Input`, `Cache Read`, `Thinking + Output`), prompt cache hit rate, subagent roll-ups (`invoke_subagent`), per-turn breakdown, and automatic **Cache-Expiry Spike** warnings.
-3. **Recent Sessions Comparison** — Ranks your recent conversations by a **100% deterministic workload yardstick** so you always know which session is eating your quota, with one-click session switching.
-
----
-
-## Why This Design? (Zero Maintenance, Zero Drift)
-
-- **100% Public & Sanctioned Interfaces**: Uses `agy -p "/usage" --output-format json` + read-only local `transcript.jsonl` files. No fragile reverse-engineered internal RPCs that break across Antigravity updates, and no `hooks.json` intercepting your chat loop.
-- **Zero `npm` Dependencies**: Runs directly on Antigravity's bundled Node.js runtime and `sidecar_sdk` (no `node_modules` to install or audit).
-- **Deterministic Workload Yardstick**:
-  Instead of scraping volatile model price sheets (which fail offline or break when new internal model IDs appear), session bars use a transparent, fixed equivalent:
-  ```text
-  Effective Tokens = Uncached Input × 1.0 + Cache Read × 0.1 + Thinking & Output × 4.0
-  ```
-  *(1 unit = 1 standard uncached input token. You can also toggle to **Raw Total Tokens** or open the built-in `ⓘ` formula card anytime.)*
-- **Auto Light/Dark Theme & Bilingual UI**: Syncs seamlessly with Antigravity's host theme tokens and auto-detects English / Simplified Chinese (with a `中文 / EN` header switch).
+1. **How much quota is left** — Live **5-hour & 7-day weekly percentage bars**, reset countdowns, and AI Credits balance.
+2. **Which conversation is actually eating your quota** — Compares your recent sessions (including spawned subagents) so you immediately know which task or prompt cost the most.
 
 ---
 
-## Quick Start
+## One-Prompt Install (Let Your AI Set Everything Up)
 
-### 1. Prerequisite (for Global Cloud `%` Bars)
+Just copy and paste this prompt into **Antigravity** (or any local coding agent) — it will automatically check your OS, install the official `agy` CLI if needed, and set up the plugin for you:
 
-Local session workload tracking works **immediately out-of-the-box** with zero setup.
-To also display cloud `5h` / `7d` quota percentages at the top of the panel, install the official Antigravity CLI once and sign in:
-
-```powershell
-# Windows (WinGet)
-winget install --id Google.AntigravityCLI --accept-source-agreements --accept-package-agreements
-agy
+```text
+Read https://raw.githubusercontent.com/boheastill/agy-quota-monitor/main/setup/SKILL.md and automatically install and configure the agy-quota-monitor plugin on my machine.
 ```
 
+Once installed, click **`+` → Quota** at the top-right of any conversation.
+
+---
+
+## Why Use This?
+
+1. **100% Official Channels — Built Not to Break**
+   - Reads global quota percentages via the official `agy -p "/usage" --output-format json` command (**0 LLM tokens used**).
+   - Reads session usage from local `transcript.jsonl` logs in read-only mode.
+   - **Zero `npm` dependencies**, no reverse-engineered private RPCs, and no chat-loop hooks — even if you're offline or Antigravity updates, your chat is never blocked.
+2. **Plain, Honest Session Cost Comparison**
+   - Local logs record raw token counts, but not all tokens hit your quota equally:
+     - **Cached context reads (`Cache`)** are heavily discounted (~90% off, **`× 0.1`**);
+     - **New uncached input (`Input`)** is baseline cost (**`× 1`**);
+     - **Model thinking + replies (`Output`)** cost roughly **4x** as much (**`× 4`**).
+   - Adding raw tokens `1:1:1` makes cache-heavy sessions look huge when they actually barely touched your quota.
+   - Instead, we estimate **`Estimated Load = Input × 1 + Cache × 0.1 + Output × 4`** — think of this number as **roughly how much real quota/money each session actually ate** relative to other sessions.
+   - Raw total tokens and cache hit rate are still shown right beside it (with a 1-click toggle), and turns where a long pause caused your prompt cache to expire are automatically flagged with **`⚠ Cache expired reload`**.
+
+---
+
+## Manual Installation
+
+### 1. Install Official `agy` CLI (for top cloud `%` bars)
+
+> Session comparison below works even without the CLI; installing `agy` enables the top 5h / weekly percentage bars.
+
+```powershell
+# Windows (PowerShell)
+winget install --id Google.AntigravityCLI --accept-source-agreements --accept-package-agreements
+```
 ```bash
 # macOS / Linux
 curl -fsSL https://antigravity.google/cli/install.sh | sh
-agy
 ```
+*(If you're already signed into Antigravity 2.0 Desktop, `agy` reuses your login automatically; otherwise run `agy` once in a terminal to sign in.)*
 
 ### 2. Install the Plugin
 
-#### Option A: Via Antigravity CLI (direct from GitHub or local clone)
-```bash
-agy plugin install https://github.com/boheastill/agy-quota-monitor
-```
-
-#### Option B: One-Click Local Script (Antigravity 2.0 Desktop)
 ```powershell
 # Windows PowerShell
+git clone https://github.com/boheastill/agy-quota-monitor.git
+cd agy-quota-monitor
 .\scripts\install.ps1
 ```
+
 ```bash
 # macOS / Linux
+git clone https://github.com/boheastill/agy-quota-monitor.git
+cd agy-quota-monitor
 chmod +x scripts/install.sh && ./scripts/install.sh
 ```
-*(Copies the plugin bundle into `~/.gemini/config/plugins/agy-quota-monitor/`.)*
-
-### 3. Open the Panel
-
-1. Ensure **Quota Monitor** is enabled under **Skills & Customizations → Plugins**.
-2. In any conversation, click **`+`** in the top-right auxiliary pane bar and select **Quota**.
+*(Or via the official CLI on a local clone: `agy plugin install ./agy-quota-monitor`.)*
 
 ---
 
-## Smart Refresh Strategy
+## Smart Refresh (Lightweight by Design)
 
-- **Local Session Transcripts**: Checked via lightweight `statSync` (`mtime` + byte size) every 2.5s while the panel is open (`<1 ms` when idle).
-- **Cloud Quota (`agy` CLI)**:
-  - Queried once when the panel opens;
-  - **Event-driven**: Automatically refreshes ~3.5s after a new model step finishes in your conversation;
-  - **Idle fallback**: Every 5 minutes while open (0 background calls when the panel is closed), plus a manual **Refresh (`↻`)** button.
+- **Local Session Logs**: Checks file modification timestamps every 2.5s while open (`<1 ms` when idle).
+- **Cloud Quota (`agy` CLI)**: Fetches once when opened, automatically refreshes ~3.5s after a new reply finishes, and falls back to every 5 minutes when idle (0 background calls when the panel is closed, plus a manual `↻` button).
 
 ---
 
-## Standalone Preview & Custom ACP Web UI Integration
+## Standalone Preview & Custom ACP Web UI API
 
-Building your own Web UI over `agy acp`? You can run the standalone HTTP server directly with Node.js (v20+):
+Building your own Web UI on top of `agy acp`? Run the standalone HTTP server directly with Node.js (v20+):
 
 ```bash
 node scripts/dev-server.mjs --port 4790
 ```
-
-- Web Dashboard: `http://127.0.0.1:4790`
-- JSON Telemetry Endpoint: `GET http://127.0.0.1:4790/api/status?conversationId=<uuid>`
-
----
-
-## Running Tests
-
-Uses Node's built-in test runner (`node:test`) with zero external dependencies:
-
-```bash
-node --test test/collector.test.mjs
-```
-
----
-
-## Repository Layout
-
-```text
-agy-quota-monitor/
-├── plugin.json                     # Official Antigravity plugin manifest
-├── assets/
-│   └── logo.svg                    # Dual-theme vector gauge icon
-├── sidecars/
-│   └── quota_board/
-│       ├── sidecar.json            # Auxiliary pane UI sidecar declaration
-│       ├── package.json            # ESM module marker
-│       ├── main.mjs                # sidecar_sdk HTTP & page router
-│       ├── collector.mjs           # CLI quota reader + mtime-cached transcript analyzer
-│       ├── index.html              # Sidecar UI markup
-│       ├── styles.css              # Host-token-adaptive styling
-│       └── app.js                  # Live countdowns, i18n, & leaderboard UI
-├── scripts/
-│   ├── install.ps1                 # Windows installer
-│   ├── install.sh                  # macOS / Linux installer
-│   └── dev-server.mjs              # Standalone preview & JSON API server
-└── test/
-    └── collector.test.mjs          # Unit tests
-```
+- Dashboard: `http://127.0.0.1:4790`
+- JSON API: `GET http://127.0.0.1:4790/api/status?conversationId=<uuid>`
 
 ## License
 
