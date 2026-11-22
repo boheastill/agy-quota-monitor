@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="frame-src 'none'; child-src 'none'; object-src 'none'; base-uri 'none'">
+  <title>Quota Monitor</title>
+  <!-- Host theme token bridge injected by Antigravity Sidecar runtime -->
+  <script src="/preload.js"></script>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <!-- Sticky Header -->
+    <header class="header">
+      <div class="header-main">
+        <div class="title-wrap">
+          <span class="live-dot" id="live-dot" aria-hidden="true"></span>
+          <h1 class="app-title" id="ui-title">额度与负载</h1>
+        </div>
+        <div class="header-actions">
+          <button type="button" id="btn-lang" class="ghost-btn xs" title="Switch language / 切换语言">EN</button>
+          <button type="button" id="btn-refresh" class="icon-btn" title="Refresh quota now / 立即刷新额度" aria-label="Refresh">
+            <svg id="icon-refresh" class="icon" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.35-3.61M13.5 2.5v2.75h-2.75" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="header-sub" id="ui-subtitle">正在读取本地与云端状态…</div>
+    </header>
+
+    <main class="content">
+      <!-- 1. Global Cloud Quota Section -->
+      <section class="section" aria-labelledby="sec-quota-title">
+        <div class="section-head">
+          <h2 class="section-title" id="sec-quota-title">全局剩余额度</h2>
+          <span class="badge hidden" id="quota-stale-badge">缓存</span>
+        </div>
+        <div id="quota-body" class="card-stack"></div>
+      </section>
+
+      <!-- 2. Current Conversation Workload Section -->
+      <section class="section" aria-labelledby="sec-current-title">
+        <div class="section-head">
+          <h2 class="section-title" id="sec-current-title">当前会话工作量</h2>
+          <button type="button" id="btn-formula-info" class="info-pill" aria-expanded="false" aria-controls="formula-popover">
+            <span aria-hidden="true">ⓘ</span>
+            <span id="ui-formula-btn-label">计费当量口径</span>
+          </button>
+        </div>
+
+        <!-- Deterministic Formula Explanation Popover -->
+        <div id="formula-popover" class="formula-box hidden" role="region">
+          <div class="formula-title" id="ui-formula-title">确定性工作量标尺（零漂移口径）</div>
+          <code class="formula-code" id="ui-formula-expr">有效当量 = 新输入 × 1 + 缓存读取 × 0.1 + 思考输出 × 4</code>
+          <p class="formula-desc" id="ui-formula-desc">
+            为什么采用固定权重而非联网抓价格表：缓存读取通常仅为新输入成本的 1/10，而思考与输出约为新输入的 4 倍。使用固定标准当量（1 单位 = 1 个标准未缓存输入 Token）可保证跨模型升级、离线环境及内部新模型下口径 100% 恒定，无需维护价格表也不会前后漂移。
+          </p>
+        </div>
+
+        <div id="current-session-body"></div>
+      </section>
+
+      <!-- 3. Recent Sessions Comparison Leaderboard -->
+      <section class="section" aria-labelledby="sec-rank-title">
+        <div class="section-head">
+          <h2 class="section-title" id="sec-rank-title">最近会话消耗对比</h2>
+          <div class="segmented" role="group" aria-label="Sort metric">
+            <button type="button" id="mode-effective" class="seg-btn active" aria-pressed="true">有效当量</button>
+            <button type="button" id="mode-raw" class="seg-btn" aria-pressed="false">原始总量</button>
+          </div>
+        </div>
+        <div id="sessions-body" class="session-list" role="list"></div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

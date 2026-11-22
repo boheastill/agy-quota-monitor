@@ -1,0 +1,6 @@
+{
+  "name": "quota_board",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Read-only sidecar UI panel for Antigravity quota pools and per-session token workload."
+}
