@@ -4,6 +4,11 @@
   "version": "1.0.0",
   "description": "Real-time model quota bars (5h & weekly pools, AI credits) and deterministic per-session token workload tracker in the auxiliary side pane.",
   "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Open the Quota side panel so I can check my 5h and weekly quota",
+    "Explain how session workload and prompt cache discounts are calculated",
+    "Verify my agy CLI quota connection status"
+  ],
   "author": {
     "name": "Bohea Still",
     "url": "https://github.com/boheastill"
