@@ -26,7 +26,11 @@ app.page('/', () => readFileSync(join(__dirname, 'index.html'), 'utf-8'));
 for (const [route, [filename, contentType]] of Object.entries(STATIC_ASSETS)) {
   app.api(
     route,
-    () => new Response(readFileSync(join(__dirname, filename), 'utf-8'), { contentType }),
+    () =>
+      new Response(readFileSync(join(__dirname, filename), 'utf-8'), {
+        contentType,
+        headers: { 'Cache-Control': 'no-store, max-age=0' },
+      }),
     'GET'
   );
 }

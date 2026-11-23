@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 import {
   cleanPromptTitle,
@@ -224,5 +227,20 @@ test('QuotaCollector rolls up child subagents into parent session without double
     assert.equal(snap.currentSession.outputTokens, 1_500);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('index.html and app.js static DOM IDs stay 100% synchronized', () => {
+  const boardDir = join(__dirname, '..', 'sidecars', 'quota_board');
+  const html = readFileSync(join(boardDir, 'index.html'), 'utf-8');
+  const js = readFileSync(join(boardDir, 'app.js'), 'utf-8');
+
+  const htmlIds = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
+  const dynamicIds = new Set(['btn-copy-cmd', 'btn-toggle-sec', 'cli-cmd']);
+  const referencedIds = new Set([...js.matchAll(/\$\('([^']+)'\)/g)].map((m) => m[1]));
+
+  for (const id of referencedIds) {
+    if (dynamicIds.has(id)) continue;
+    assert.ok(htmlIds.has(id), `Missing id="${id}" in index.html required by app.js`);
   }
 });
