@@ -1,16 +1,16 @@
 /**
- * Core data engine for Antigravity Quota Monitor (pure Node.js stdlib, zero dependencies).
+ * Core data engine for Antigravity Quota Monitor v2.0 (pure Node.js stdlib, zero dependencies).
  *
  * Responsibilities:
- * 1. Cloud Quota State (Read-only via official `agy` CLI):
- *    Executes `agy -p "/usage" --output-format json` and `agy -p "/credits" --output-format json`
- *    sequentially in the background (avoiding CLI lock contention), with instant disk-cache
- *    hydration, event-driven post-turn refresh, and 5-minute idle caching.
+ * 1. Cloud Quota & EWMA Pace Engine (Read-only via official `agy` CLI):
+ *    - Executes `agy -p "/usage" --output-format json` and `/credits` sequentially in background.
+ *    - Maintains a compact (<4 KB, max 60 points) ring buffer of historical snapshots to compute
+ *      exponentially time-weighted (EWMA half-life) burn rates, runout ETAs, and 7d time-pace markers.
  *
  * 2. Local Session Workload Analyzer (Read-only via `transcript.jsonl`):
- *    Reads `<appData>/brain/<conversationId>/.system_generated/logs/transcript.jsonl` with
- *    bounded mtime + byte-size caching, rolling up subagent usage (`invoke_subagent`) and
- *    computing a 100% deterministic "Effective Token" workload metric across all models.
+ *    - Reads `<appData>/brain/<conversationId>/.system_generated/logs/transcript.jsonl` with
+ *      bounded mtime + byte-size caching, rolling up subagent usage (`invoke_subagent`), resolving
+ *      short sidebar titles via `agentapi`, and computing weighted Effective Token load.
  *
  * Nothing in this module ever mutates Antigravity state, conversations, or user settings.
  */
@@ -34,15 +34,10 @@ const CONV_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 const UUID_FIND_RE = /\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/gi;
 
 /**
- * Deterministic Effective Token formula constants.
- *
- * Rationale:
- * - Uncached input tokens are the baseline unit (1.0x).
- * - Prompt cache reads are ~10% of input cost across frontier model families (0.1x).
- * - Thinking + output tokens are ~4x of input cost across frontier model families (4.0x).
- *
- * Keeping these weights fixed guarantees a rock-solid, zero-maintenance yardstick that never
- * drifts across sessions or breaks when new internal/frontier model IDs launch.
+ * Weighted Effective Token formula constants:
+ * - Uncached input: 1.0x baseline
+ * - Prompt cache read: 0.1x (~90% discount)
+ * - Thinking + output: 4.0x
  */
 export const WEIGHTS = Object.freeze({
   input: 1.0,
@@ -56,18 +51,21 @@ export const FORMULA_SPEC = Object.freeze({
   expression: 'input × 1 + cache_read × 0.1 + output × 4',
 });
 
+const HOUR_MS = 3_600_000;
 const IDLE_QUOTA_TTL_MS = 5 * 60 * 1000;      // 5 min fallback refresh while pane is open
 const CREDITS_TTL_MS = 15 * 60 * 1000;        // Refresh credits every 15 min (unless forced)
 const MIN_MANUAL_REFRESH_MS = 3 * 1000;       // 3s anti-spam throttle on manual button clicks
 const POST_TURN_SETTLE_MS = 3500;             // Wait 3.5s after a new model step lands before querying cloud quota
-const CLI_TIMEOUT_MS = 45_000;                // Headless `agy -p` boots an ephemeral LS (~10-20s on cold start)
-const MAX_SCANNED_CONVERSATIONS = 60;         // Inspect newest 60 brain dirs for leaderboard speed
-const MAX_TRANSCRIPT_CACHE = 120;             // Bounded LRU/FIFO cache size for long-running sidecar uptime
+const CLI_TIMEOUT_MS = 45_000;                // Headless `agy -p` cold start safety budget
+const MAX_HISTORY_POINTS = 60;                // Ring buffer cap for EWMA burn-rate history (<4 KB on disk)
+const MIN_HISTORY_SAMPLE_GAP_MS = 60_000;     // Record at most 1 history sample per minute
+const MAX_SCANNED_CONVERSATIONS = 60;
+const MAX_TRANSCRIPT_CACHE = 120;
 const MAX_TITLE_CACHE = 200;
-const CACHE_SPIKE_THRESHOLD_TOKENS = 25_000;  // Flag cache-expiry spike when Turn 2+ step 1 has >=25k uncached input & 0 cache read
+const CACHE_SPIKE_THRESHOLD_TOKENS = 25_000;
 
 /**
- * Compute deterministic effective tokens from raw token counts.
+ * Compute weighted effective tokens from raw token counts.
  */
 export function computeEffectiveTokens(inputTokens = 0, cacheReadTokens = 0, outputTokens = 0) {
   const inp = Math.max(0, Number(inputTokens) || 0);
@@ -87,10 +85,9 @@ export function computeCacheHitRatio(inputTokens = 0, cacheReadTokens = 0) {
 }
 
 /**
- * Extract a clean, human-readable one-line prompt preview from a raw USER_INPUT content string.
- * Strips `<USER_REQUEST>`, `<ADDITIONAL_METADATA>`, and `<USER_SETTINGS_CHANGE>` system blocks.
+ * Extract a clean, concise single-line title from raw USER_INPUT content.
  */
-export function cleanPromptTitle(rawContent = '', maxLen = 64) {
+export function cleanPromptTitle(rawContent = '', maxLen = 42) {
   const text = String(rawContent ?? '');
   const reqMatch = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/i.exec(text);
   let body = reqMatch ? reqMatch[1] : text;
@@ -102,6 +99,142 @@ export function cleanPromptTitle(rawContent = '', maxLen = 64) {
     .trim();
   if (!body) return '';
   return body.length > maxLen ? `${body.slice(0, maxLen - 1).trimEnd()}…` : body;
+}
+
+/**
+ * Infer canonical window duration in milliseconds (`5h`, `7d`, `24h`) from bucket metadata.
+ */
+export function inferWindowDurationMs(windowStr = '', idStr = '') {
+  const combined = `${windowStr} ${idStr}`.toLowerCase();
+  if (/\b5h(r|ours?)?\b/.test(combined)) return 5 * HOUR_MS;
+  if (/\b(weekly|week|7d|1w)\b/.test(combined)) return 7 * 24 * HOUR_MS;
+  if (/\b(daily|24h|1d)\b/.test(combined)) return 24 * HOUR_MS;
+  return null;
+}
+
+/**
+ * Compute Exponentially Time-Weighted Moving Average (EWMA half-life) burn rate & runout forecast.
+ *
+ * Formula over irregular sample intervals [t_{i-1}, t_i]:
+ *   decay_i = 2^(-(nowMs - t_mid) / halfLifeMs)
+ *   ewmaRatePerHour = sum(decay_i * deltaUsed_i) / sum(decay_i * deltaHours_i)
+ *
+ * Blends cycle-elapsed baseline rate with recent EWMA rate:
+ * - `5h` pool uses a 30-minute half-life (responsive to active coding bursts).
+ * - `7d` pool uses a 12-hour half-life blended with the 7-day cycle baseline + Time-Pace marker.
+ */
+export function computePaceForecast(bucket, history = [], nowMs = Date.now()) {
+  if (!bucket || bucket.disabled) return null;
+
+  const windowMs = inferWindowDurationMs(bucket.window, bucket.id);
+  const isShortWindow = windowMs !== null && windowMs <= 6 * HOUR_MS;
+  const halfLifeMs = isShortWindow ? 0.5 * HOUR_MS : 12 * HOUR_MS;
+
+  let timeRemainingFraction = null;
+  let paceDeltaPercent = null;
+  let remainingHours = null;
+  let baselineRatePerHour = null;
+
+  if (windowMs && bucket.resetAtMs) {
+    const remMs = Math.max(0, Math.min(windowMs, bucket.resetAtMs - nowMs));
+    const elapsedMs = Math.max(0, windowMs - remMs);
+    remainingHours = remMs / HOUR_MS;
+    timeRemainingFraction = Number((remMs / windowMs).toFixed(4));
+    paceDeltaPercent = Number(((bucket.remainingFraction - timeRemainingFraction) * 100).toFixed(1));
+
+    // Once at least 5 minutes into the window, cycle baseline rate is well-defined
+    if (elapsedMs >= 5 * 60_000) {
+      const usedFrac = Math.max(0, 1 - bucket.remainingFraction);
+      baselineRatePerHour = usedFrac / (elapsedMs / HOUR_MS);
+    }
+  }
+
+  // Compute continuous-time half-life EWMA burn rate from ring buffer samples in the SAME reset cycle
+  let weightedUsed = 0;
+  let weightedHours = 0;
+  const maxLookbackMs = halfLifeMs * 5;
+
+  if (Array.isArray(history) && history.length >= 2) {
+    for (let i = 1; i < history.length; i++) {
+      const prev = history[i - 1];
+      const curr = history[i];
+      const dtMs = (curr?.ts || 0) - (prev?.ts || 0);
+      if (dtMs < 15_000 || nowMs - curr.ts > maxLookbackMs) continue;
+
+      const bPrev = prev.buckets?.[bucket.id];
+      const bCurr = curr.buckets?.[bucket.id];
+      if (!bPrev || !bCurr) continue;
+
+      // Skip across window resets (resetAtMs jumped forward or fraction jumped up)
+      if (bPrev.resetAtMs && bCurr.resetAtMs && Math.abs(bCurr.resetAtMs - bPrev.resetAtMs) > 10 * 60_000) {
+        continue;
+      }
+      if (bCurr.frac > bPrev.frac + 0.002) continue;
+
+      const deltaUsed = Math.max(0, bPrev.frac - bCurr.frac);
+      const dtHours = dtMs / HOUR_MS;
+      const midTs = (prev.ts + curr.ts) / 2;
+      const decay = Math.pow(2, -Math.max(0, nowMs - midTs) / halfLifeMs);
+
+      weightedUsed += decay * deltaUsed;
+      weightedHours += decay * dtHours;
+    }
+  }
+
+  const ewmaRatePerHour = weightedHours > 0.02 ? weightedUsed / weightedHours : null;
+
+  // Smoothly blend baseline rate and recent EWMA rate based on observed EWMA coverage
+  let effectiveRatePerHour = 0;
+  if (ewmaRatePerHour !== null && baselineRatePerHour !== null) {
+    const ewmaTargetSpanHours = isShortWindow ? 0.5 : 6.0;
+    const maxEwmaShare = isShortWindow ? 0.85 : 0.65;
+    const alpha = Math.min(maxEwmaShare, (weightedHours / ewmaTargetSpanHours) * maxEwmaShare);
+    effectiveRatePerHour = alpha * ewmaRatePerHour + (1 - alpha) * baselineRatePerHour;
+  } else if (ewmaRatePerHour !== null) {
+    effectiveRatePerHour = ewmaRatePerHour;
+  } else if (baselineRatePerHour !== null) {
+    effectiveRatePerHour = baselineRatePerHour;
+  }
+
+  let willExhaustBeforeReset = false;
+  let estimatedTimeLeftSec = null;
+  let projectedRemainingPercent = null;
+
+  if (remainingHours !== null) {
+    if (effectiveRatePerHour > 1e-6) {
+      const hoursToZero = bucket.remainingFraction / effectiveRatePerHour;
+      if (hoursToZero < remainingHours * 0.98) {
+        willExhaustBeforeReset = true;
+        estimatedTimeLeftSec = Math.max(60, Math.round(hoursToZero * 3600));
+      } else {
+        const projFrac = Math.max(0, Math.min(1, bucket.remainingFraction - effectiveRatePerHour * remainingHours));
+        projectedRemainingPercent = Math.round(projFrac * 100);
+      }
+    } else {
+      projectedRemainingPercent = Math.round(bucket.remainingFraction * 100);
+    }
+  }
+
+  let status = 'comfortable';
+  if (bucket.remainingFraction <= 0.05 || (willExhaustBeforeReset && (paceDeltaPercent ?? 0) < -15)) {
+    status = 'exhausting';
+  } else if (willExhaustBeforeReset || bucket.remainingFraction < 0.2) {
+    status = 'tight';
+  } else if ((paceDeltaPercent ?? 0) < -5 || (projectedRemainingPercent !== null && projectedRemainingPercent < 15)) {
+    status = 'steady';
+  }
+
+  return {
+    windowKind: isShortWindow ? '5h' : windowMs === 7 * 24 * HOUR_MS ? '7d' : 'other',
+    halfLifeMinutes: Math.round(halfLifeMs / 60_000),
+    timeRemainingFraction,
+    paceDeltaPercent,
+    burnRatePctPerHour: Number((effectiveRatePerHour * 100).toFixed(2)),
+    willExhaustBeforeReset,
+    estimatedTimeLeftSec,
+    projectedRemainingPercent,
+    status,
+  };
 }
 
 /**
@@ -141,7 +274,7 @@ export function parseTranscriptJsonl(jsonlText = '') {
     }
 
     if (step.type === 'USER_INPUT') {
-      const preview = cleanPromptTitle(step.content || '', 72);
+      const preview = cleanPromptTitle(step.content || '', 48);
       if (!firstPromptTitle && preview) firstPromptTitle = preview;
       currentTurn = {
         turnIndex: turns.length + 1,
@@ -205,7 +338,6 @@ export function parseTranscriptJsonl(jsonlText = '') {
       continue;
     }
 
-    // Extract spawned subagent conversation IDs from tool result steps following invoke_subagent
     if (pendingSubagentCall && typeof step.content === 'string') {
       for (const m of step.content.matchAll(UUID_FIND_RE)) {
         childSubagentIds.add(m[1].toLowerCase());
@@ -281,9 +413,6 @@ export function extractJsonFromStdout(raw = '') {
   }
 }
 
-/**
- * Unwrap CLI JSON envelopes (such as `{ status: "SUCCESS", command: { name: "usage", data: {...} } }`).
- */
 function unwrapCliEnvelope(payload) {
   if (!payload || typeof payload !== 'object') return null;
   if (payload.command && typeof payload.command.data === 'object' && payload.command.data !== null) {
@@ -299,7 +428,8 @@ function unwrapCliEnvelope(payload) {
 }
 
 /**
- * Normalize `agy -p "/usage" --output-format json` payload shapes into a uniform list of buckets.
+ * Normalize `agy -p "/usage" --output-format json` payload shapes into a uniform list of buckets,
+ * ordered with short-term (`5h`) windows before weekly (`7d`) windows within each group.
  */
 export function parseUsagePayload(rawPayload, fetchedAtMs = Date.now()) {
   const payload = unwrapCliEnvelope(rawPayload);
@@ -323,6 +453,7 @@ export function parseUsagePayload(rawPayload, fetchedAtMs = Date.now()) {
 
     const windowLabel = String(raw.window || raw.period || raw.id || fallbackKey || '').trim();
     const label = formatBucketLabel(groupName, windowLabel, raw.name || raw.label || fallbackKey);
+    const id = String(raw.id || fallbackKey || label).toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
 
     let resetAtMs = null;
     const resetTimeStr = raw.reset_time ?? raw.resetTime ?? raw.resets_at ?? raw.resetsAt;
@@ -341,11 +472,15 @@ export function parseUsagePayload(rawPayload, fetchedAtMs = Date.now()) {
     if (seenKeys.has(dedupKey)) return;
     seenKeys.add(dedupKey);
 
+    const isPrimaryGemini = /gemini/i.test(`${groupName} ${id} ${label}`) && !/3p|claude|gpt/i.test(`${groupName} ${id}`);
     const tooltipParts = [groupDesc, raw.description].filter(Boolean);
+
     buckets.push({
-      id: String(raw.id || fallbackKey || label).toLowerCase().replace(/[^a-z0-9_-]+/g, '-'),
-      group: groupName || '',
+      id,
+      group: groupName || (isPrimaryGemini ? 'Gemini Models' : 'Other Models'),
+      isPrimaryGemini,
       window: windowLabel || '',
+      shortWindowLabel: shortWindowTag(windowLabel, id),
       label,
       description: tooltipParts.join(' — '),
       remainingFraction: fraction,
@@ -355,7 +490,6 @@ export function parseUsagePayload(rawPayload, fetchedAtMs = Date.now()) {
     });
   };
 
-  // 1. Prefer structured `groups[].buckets[]` (standard `agy` v1.5+ schema)
   if (Array.isArray(payload.groups)) {
     for (const grp of payload.groups) {
       const grpName = String(grp?.name || grp?.label || grp?.id || '').trim();
@@ -365,14 +499,12 @@ export function parseUsagePayload(rawPayload, fetchedAtMs = Date.now()) {
     }
   }
 
-  // 2. Top-level `buckets` or `pools` array
   for (const arrKey of ['buckets', 'pools', 'windows']) {
     if (Array.isArray(payload[arrKey])) {
       for (const b of payload[arrKey]) addBucket(b, b?.group || '', '', b?.window || b?.id || '');
     }
   }
 
-  // 3. Dictionary map under `quota` (e.g. statusline payload `{ quota: { "gemini-5h": {...} } }`)
   const quotaObj = payload.quota && typeof payload.quota === 'object' ? payload.quota : null;
   if (quotaObj && !Array.isArray(quotaObj) && buckets.length === 0) {
     for (const [k, v] of Object.entries(quotaObj)) {
@@ -380,12 +512,28 @@ export function parseUsagePayload(rawPayload, fetchedAtMs = Date.now()) {
     }
   }
 
-  // 4. Direct flat object fallback
   if (buckets.length === 0 && (payload.remaining_fraction !== undefined || payload.remainingFraction !== undefined)) {
     addBucket(payload, '', '', 'primary');
   }
 
+  // Sort primary Gemini first, and within each group put short windows (5h) before long windows (7d)
+  buckets.sort((a, b) => {
+    if (a.isPrimaryGemini !== b.isPrimaryGemini) return a.isPrimaryGemini ? -1 : 1;
+    if (a.group !== b.group) return a.group.localeCompare(b.group);
+    const durA = inferWindowDurationMs(a.window, a.id) ?? 9e12;
+    const durB = inferWindowDurationMs(b.window, b.id) ?? 9e12;
+    return durA - durB;
+  });
+
   return buckets;
+}
+
+function shortWindowTag(windowStr, idStr) {
+  const combined = `${windowStr} ${idStr}`.toLowerCase();
+  if (/\b5h(r|ours?)?\b/.test(combined)) return '5h';
+  if (/\b(weekly|week|7d|1w)\b/.test(combined)) return '7d';
+  if (/\b(daily|24h|1d)\b/.test(combined)) return '24h';
+  return windowStr || 'Pool';
 }
 
 function formatBucketLabel(group, windowStr, rawName) {
@@ -455,19 +603,21 @@ export function parseCreditsPayload(rawPayload) {
 }
 
 // ---------------------------------------------------------------------------
-// Stateful Collector Class (instantiated once per sidecar / dev server)
+// Stateful Collector Class
 // ---------------------------------------------------------------------------
 
 export class QuotaCollector {
   constructor(options = {}) {
     this.customAppDataDirs = options.appDataDirs || null;
     this.cacheFilePath = options.cacheFilePath !== undefined ? options.cacheFilePath : this._defaultCacheFilePath();
-    this.transcriptCache = new Map(); // path -> { mtimeMs, size, data }
-    this.titleCache = new Map();      // convId -> string | Promise
-    this.resolvedAgyBin = undefined;  // undefined = unchecked, null = missing, string = path
+    this.transcriptCache = new Map();
+    this.titleCache = new Map();
+    this.resolvedAgyBin = undefined;
+    this.resolvedAgentApi = undefined;
+    this.quotaHistory = []; // [{ ts, buckets: { [id]: { frac, resetAtMs } } }]
 
     this.quotaState = {
-      status: 'initializing', // initializing | ok | cli_missing | auth_needed | error
+      status: 'initializing',
       refreshing: false,
       fetchedAtMs: null,
       creditsFetchedAtMs: null,
@@ -497,6 +647,9 @@ export class QuotaCollector {
     try {
       if (!existsSync(this.cacheFilePath)) return;
       const saved = JSON.parse(readFileSync(this.cacheFilePath, 'utf-8'));
+      if (Array.isArray(saved?.history)) {
+        this.quotaHistory = saved.history.slice(-MAX_HISTORY_POINTS);
+      }
       if (saved && Array.isArray(saved.buckets) && saved.buckets.length > 0) {
         this.quotaState = {
           ...this.quotaState,
@@ -509,7 +662,29 @@ export class QuotaCollector {
         };
       }
     } catch {
-      // Ignore corrupt or unreadable cache file
+      // Ignore corrupt cache
+    }
+  }
+
+  _recordHistorySample(buckets, ts) {
+    if (!Array.isArray(buckets) || buckets.length === 0) return;
+    const last = this.quotaHistory[this.quotaHistory.length - 1];
+    if (last && ts - last.ts < MIN_HISTORY_SAMPLE_GAP_MS) {
+      // Update latest sample in place when refreshed rapidly within the same minute
+      for (const b of buckets) {
+        if (!b.disabled) last.buckets[b.id] = { frac: b.remainingFraction, resetAtMs: b.resetAtMs };
+      }
+      last.ts = ts;
+      return;
+    }
+
+    const map = {};
+    for (const b of buckets) {
+      if (!b.disabled) map[b.id] = { frac: b.remainingFraction, resetAtMs: b.resetAtMs };
+    }
+    this.quotaHistory.push({ ts, buckets: map });
+    if (this.quotaHistory.length > MAX_HISTORY_POINTS) {
+      this.quotaHistory = this.quotaHistory.slice(-MAX_HISTORY_POINTS);
     }
   }
 
@@ -524,18 +699,15 @@ export class QuotaCollector {
           creditsFetchedAtMs: this.quotaState.creditsFetchedAtMs,
           buckets: this.quotaState.buckets,
           credits: this.quotaState.credits,
+          history: this.quotaHistory,
         }),
         'utf-8'
       );
     } catch {
-      // Non-fatal if cache directory is read-only
+      // Non-fatal
     }
   }
 
-  /**
-   * Locate Antigravity appData directories containing `brain/`.
-   * Follows the exact same `ANTIGRAVITY_EXECUTABLE_DATA_DIR` traversal as builtin sidecars.
-   */
   findAppDataDirs() {
     if (Array.isArray(this.customAppDataDirs)) return this.customAppDataDirs;
 
@@ -554,10 +726,6 @@ export class QuotaCollector {
       .filter((dir) => existsSync(join(dir, 'brain')));
   }
 
-  /**
-   * Locate the `agy` CLI binary across PATH and standard installation directories
-   * (including WinGet Packages so no desktop app restart is needed after `winget install`).
-   */
   resolveAgyBinary() {
     if (this.resolvedAgyBin !== undefined && this.resolvedAgyBin !== null) {
       if (existsSync(this.resolvedAgyBin)) return this.resolvedAgyBin;
@@ -592,7 +760,7 @@ export class QuotaCollector {
             }
           }
         } catch {
-          // Ignore permission errors
+          // Ignore
         }
       }
     } else {
@@ -622,7 +790,7 @@ export class QuotaCollector {
           return candidate;
         }
       } catch {
-        // Continue searching
+        // Continue
       }
     }
 
@@ -630,10 +798,6 @@ export class QuotaCollector {
     return null;
   }
 
-  /**
-   * Execute a read-only `agy -p "<slashCommand>" --output-format json` call safely.
-   * Immediately closes stdin so interactive login prompts never hang the child process.
-   */
   execAgyJson(binPath, slashCommand) {
     const allowedCommands = new Set(['/usage', '/credits']);
     if (!allowedCommands.has(slashCommand)) {
@@ -671,15 +835,11 @@ export class QuotaCollector {
       try {
         child.stdin?.end();
       } catch {
-        // Ignore stdin close errors
+        // Ignore
       }
     });
   }
 
-  /**
-   * Trigger a non-blocking cloud quota refresh if needed or forced.
-   * Runs `/usage` and `/credits` sequentially so two headless CLI instances never contend.
-   */
   triggerQuotaRefresh({ force = false } = {}) {
     if (this._inFlightPromise) return this._inFlightPromise;
 
@@ -715,6 +875,7 @@ export class QuotaCollector {
         const usageRaw = await this.execAgyJson(bin, '/usage');
         const fetchedAtMs = Date.now();
         const buckets = parseUsagePayload(usageRaw, fetchedAtMs);
+        this._recordHistorySample(buckets, fetchedAtMs);
 
         let credits = this.quotaState.credits;
         let creditsFetchedAtMs = this.quotaState.creditsFetchedAtMs;
@@ -733,7 +894,7 @@ export class QuotaCollector {
               creditsFetchedAtMs = Date.now();
             }
           } catch {
-            // Credits command is optional on some account types; keep usage success intact
+            // Optional
           }
         }
 
@@ -769,9 +930,6 @@ export class QuotaCollector {
     return this._inFlightPromise;
   }
 
-  /**
-   * Schedule a debounced cloud quota refresh 3.5s after a new conversation step completes.
-   */
   schedulePostTurnRefresh() {
     if (this._postTurnTimer) clearTimeout(this._postTurnTimer);
     this._postTurnTimer = setTimeout(() => {
@@ -781,30 +939,86 @@ export class QuotaCollector {
   }
 
   /**
-   * Fetch conversation title asynchronously via built-in `agentapi` when running inside Antigravity.
+   * Resolve the `agentapi` helper binary across env vars and standard Windows/macOS/Linux locations
+   * so short sidebar titles (e.g. `额度实时显示插件`) resolve cleanly without `.bat` spawn failures.
    */
+  _resolveAgentApiExecutable() {
+    if (this.resolvedAgentApi !== undefined) return this.resolvedAgentApi;
+
+    const envExe = process.env.ANTIGRAVITY_AGENTAPI_EXE;
+    if (envExe && existsSync(envExe)) {
+      this.resolvedAgentApi = { file: envExe, prefixArgs: ['agentapi'], isBat: /\.(cmd|bat)$/i.test(envExe) };
+      return this.resolvedAgentApi;
+    }
+
+    const home = homedir();
+    if (IS_WIN) {
+      const localApp = process.env.LOCALAPPDATA || join(home, 'AppData', 'Local');
+      const lsExe = join(localApp, 'Programs', 'antigravity', 'resources', 'bin', 'language_server.exe');
+      if (existsSync(lsExe)) {
+        this.resolvedAgentApi = { file: lsExe, prefixArgs: ['agentapi'], isBat: false };
+        return this.resolvedAgentApi;
+      }
+      const batPath = join(home, '.gemini', 'antigravity', 'bin', 'agentapi.bat');
+      if (existsSync(batPath)) {
+        this.resolvedAgentApi = { file: batPath, prefixArgs: [], isBat: true };
+        return this.resolvedAgentApi;
+      }
+    } else {
+      const shPath = join(home, '.gemini', 'antigravity', 'bin', 'agentapi');
+      if (existsSync(shPath)) {
+        this.resolvedAgentApi = { file: shPath, prefixArgs: [], isBat: false };
+        return this.resolvedAgentApi;
+      }
+    }
+
+    this.resolvedAgentApi = null;
+    return null;
+  }
+
   resolveAgentApiTitle(convId) {
     const cached = this.titleCache.get(convId);
     if (typeof cached === 'string') return cached;
     if (cached) return '';
 
-    const exe = process.env.ANTIGRAVITY_AGENTAPI_EXE;
-    if (!exe && !process.env.ANTIGRAVITY_LS_ADDRESS) {
+    if (!process.env.ANTIGRAVITY_LS_ADDRESS) {
       this._setTitleCache(convId, '');
       return '';
     }
-    const file = exe || 'agentapi';
-    const args = [...(exe ? ['agentapi'] : []), 'get-conversation-metadata', convId];
+
+    const resolved = this._resolveAgentApiExecutable();
+    if (!resolved) {
+      this._setTitleCache(convId, '');
+      return '';
+    }
+
+    const file = resolved.isBat ? (process.env.ComSpec || 'cmd.exe') : resolved.file;
+    const args = resolved.isBat
+      ? ['/d', '/s', '/c', `"${resolved.file}" get-conversation-metadata ${convId}`]
+      : [...resolved.prefixArgs, 'get-conversation-metadata', convId];
+
     const p = new Promise((resolve) => {
-      const child = execFile(file, args, { encoding: 'utf-8', timeout: 4000, windowsHide: true }, (err, stdout) => {
-        if (err) return resolve('');
-        try {
-          const md = JSON.parse(stdout || '{}');
-          resolve(String(md.title || md.summary || md.name || md.metadata?.title || md.conversation?.title || '').trim());
-        } catch {
-          resolve('');
+      const child = execFile(
+        file,
+        args,
+        {
+          encoding: 'utf-8',
+          timeout: 4000,
+          windowsHide: true,
+          windowsVerbatimArguments: resolved.isBat,
+        },
+        (err, stdout) => {
+          if (err) return resolve('');
+          try {
+            const md = JSON.parse(stdout || '{}');
+            resolve(
+              String(md.title || md.summary || md.name || md.metadata?.title || md.conversation?.title || '').trim()
+            );
+          } catch {
+            resolve('');
+          }
         }
-      });
+      );
       try {
         child.stdin?.end();
       } catch {
@@ -826,9 +1040,6 @@ export class QuotaCollector {
     this.titleCache.set(key, val);
   }
 
-  /**
-   * Read and parse a single conversation's `transcript.jsonl` with bounded mtime + size caching.
-   */
   readConversationMetrics(brainDir, convId) {
     if (!CONV_ID_RE.test(convId)) return null;
     const transcriptPath = join(brainDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
@@ -865,9 +1076,6 @@ export class QuotaCollector {
     return data;
   }
 
-  /**
-   * Scan recent conversations, roll up child subagent tokens into parent sessions, and build snapshot.
-   */
   getSnapshot({ conversationId = '', forceRefresh = false } = {}) {
     if (forceRefresh || this.quotaState.status === 'initializing' || this.quotaState.stale) {
       this.triggerQuotaRefresh({ force: forceRefresh });
@@ -875,6 +1083,7 @@ export class QuotaCollector {
       this.triggerQuotaRefresh({ force: false });
     }
 
+    const nowMs = Date.now();
     const activeConvId = CONV_ID_RE.test(conversationId) ? conversationId.toLowerCase() : '';
     const appDataDirs = this.findAppDataDirs();
 
@@ -895,7 +1104,7 @@ export class QuotaCollector {
           const st = statSync(transcriptPath);
           dirEntries.push({ brainDir, convId: lower, rawName: name, mtimeMs: st.mtimeMs });
         } catch {
-          // Skip folders that have no transcript yet
+          // Ignore empty conversation dir
         }
       }
     }
@@ -1003,8 +1212,18 @@ export class QuotaCollector {
         leaderboard.push(summary);
       }
     }
-
     leaderboard.sort((a, b) => b.effectiveTokens - a.effectiveTokens);
+
+    // Enrich buckets with live EWMA half-life pace forecasts
+    const enrichedBuckets = (this.quotaState.buckets || []).map((b) => ({
+      ...b,
+      pace: computePaceForecast(b, this.quotaHistory, nowMs),
+    }));
+
+    const resolvedTitlesSig = leaderboard
+      .slice(0, 10)
+      .map((s) => s.title)
+      .join('~');
 
     const etag = [
       this.quotaState.status,
@@ -1015,16 +1234,20 @@ export class QuotaCollector {
       newestStepMs,
       leaderboard.length,
       currentSession ? `${currentSession.effectiveTokens}:${currentSession.title}` : 'none',
+      resolvedTitlesSig,
     ].join('|');
 
     return {
       etag,
-      nowMs: Date.now(),
+      nowMs,
       formula: FORMULA_SPEC,
-      quota: this.quotaState,
+      quota: {
+        ...this.quotaState,
+        buckets: enrichedBuckets,
+      },
       activeConversationId: activeConvId || null,
       currentSession,
-      sessions: leaderboard.slice(0, 20),
+      sessions: leaderboard.slice(0, 15),
     };
   }
 }

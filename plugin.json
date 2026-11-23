@@ -1,7 +1,7 @@
 {
   "name": "agy-quota-monitor",
   "displayName": "Quota Monitor",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Real-time model quota bars (5h & weekly pools, AI credits) and deterministic per-session token workload tracker in the auxiliary side pane.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [

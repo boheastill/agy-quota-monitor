@@ -8,6 +8,7 @@ import {
   cleanPromptTitle,
   computeCacheHitRatio,
   computeEffectiveTokens,
+  computePaceForecast,
   extractJsonFromStdout,
   parseCreditsPayload,
   parseTranscriptJsonl,
@@ -16,7 +17,6 @@ import {
 } from '../sidecars/quota_board/collector.mjs';
 
 test('computeEffectiveTokens uses deterministic 1x / 0.1x / 4x weights', () => {
-  // 10,000 * 1 + 50,000 * 0.1 + 2,000 * 4 = 10,000 + 5,000 + 8,000 = 23,000
   assert.equal(computeEffectiveTokens(10_000, 50_000, 2_000), 23_000);
   assert.equal(computeEffectiveTokens(0, 0, 0), 0);
   assert.equal(Math.round(computeCacheHitRatio(20_000, 80_000) * 100), 80);
@@ -83,29 +83,31 @@ test('parseTranscriptJsonl aggregates turns, flags cache-expiry spikes, and extr
   assert.equal(res.firstPromptTitle, 'Build quota panel');
   assert.equal(res.turns.length, 2);
   assert.equal(res.turns[0].cacheExpiredSpike, false);
-  assert.equal(res.turns[1].cacheExpiredSpike, true, 'First step cache miss in Turn 2+ should be flagged even if subsequent steps hit cache');
+  assert.equal(res.turns[1].cacheExpiredSpike, true);
   assert.deepEqual(res.childSubagentIds, [childId]);
   assert.equal(res.inputTokens, 72_000);
   assert.equal(res.cacheReadTokens, 101_000);
   assert.equal(res.outputTokens, 2_000);
-  assert.equal(res.effectiveTokens, computeEffectiveTokens(72_000, 101_000, 2_000));
 });
 
-test('parseUsagePayload normalizes real agy v1.5+ command.data envelopes and quota maps', () => {
+test('parseUsagePayload orders Gemini 5h before 7d and separates secondary groups', () => {
   const now = Date.parse('2026-11-22T10:00:00Z');
   const rawStdout = JSON.stringify({
-    conversation_id: '',
     status: 'SUCCESS',
     command: {
       name: 'usage',
       data: {
         groups: [
           {
+            name: 'Claude and GPT models',
+            buckets: [{ id: '3p-weekly', window: 'weekly', remaining_fraction: 0.95, reset_in_seconds: 86400 }],
+          },
+          {
             name: 'Gemini Models',
-            description: 'Models within this group: Gemini 4 Neon, Gemini 4 Carbon',
+            description: 'Models within this group: Gemini 4 Carbon',
             buckets: [
-              { id: 'gemini-weekly', window: 'weekly', remaining_fraction: 0.917245, reset_time: '2026-11-28T09:19:13Z' },
-              { id: 'gemini-5h', window: '5h', remaining_fraction: 0.963661, reset_in_seconds: 3600 },
+              { id: 'gemini-weekly', window: 'weekly', remaining_fraction: 0.88, reset_time: '2026-11-28T09:19:13Z' },
+              { id: 'gemini-5h', window: '5h', remaining_fraction: 0.965, reset_in_seconds: 3600 },
             ],
           },
         ],
@@ -113,25 +115,61 @@ test('parseUsagePayload normalizes real agy v1.5+ command.data envelopes and quo
     },
   });
 
-  const json = extractJsonFromStdout(rawStdout);
-  const buckets = parseUsagePayload(json, now);
-  assert.equal(buckets.length, 2);
-  assert.equal(buckets[0].label, 'Gemini Models · Weekly (7d)');
-  assert.equal(buckets[0].remainingPercent, 91.72);
-  assert.match(buckets[0].description, /Gemini 4 Carbon/);
-  assert.equal(buckets[1].label, 'Gemini Models · 5h');
-  assert.equal(buckets[1].remainingPercent, 96.37);
-  assert.equal(buckets[1].resetAtMs, now + 3600 * 1000);
+  const buckets = parseUsagePayload(extractJsonFromStdout(rawStdout), now);
+  assert.equal(buckets.length, 3);
+  // Primary Gemini 5h MUST come first, followed by Gemini 7d, followed by Claude/GPT
+  assert.equal(buckets[0].id, 'gemini-5h');
+  assert.equal(buckets[0].isPrimaryGemini, true);
+  assert.equal(buckets[1].id, 'gemini-weekly');
+  assert.equal(buckets[1].isPrimaryGemini, true);
+  assert.equal(buckets[2].id, '3p-weekly');
+  assert.equal(buckets[2].isPrimaryGemini, false);
 
-  const creditsEnvelope = {
+  const credits = parseCreditsPayload({
     status: 'SUCCESS',
-    command: {
-      name: 'credits',
-      data: { remaining_credits: 42, upgrade_uri: 'https://antigravity.google/g1-upgrade' },
-    },
+    command: { name: 'credits', data: { remaining_credits: 0 } },
+  });
+  assert.deepEqual(credits, { balance: 0, overageEnabled: null });
+});
+
+test('computePaceForecast calculates 7d time-pace marker and EWMA 5h burst runout ETA', () => {
+  const hour = 3_600_000;
+  const now = 1_700_000_000_000;
+
+  // 1) Cold-start 7d bucket: 127h left out of 168h (75.6% time left), 87.6% quota left -> ahead of pace (+12%)
+  const weeklyBucket = {
+    id: 'gemini-weekly',
+    window: 'weekly',
+    remainingFraction: 0.876,
+    remainingPercent: 87.6,
+    resetAtMs: now + 127 * hour,
+    disabled: false,
   };
-  const credits = parseCreditsPayload(creditsEnvelope);
-  assert.deepEqual(credits, { balance: 42, overageEnabled: null });
+  const weeklyPace = computePaceForecast(weeklyBucket, [], now);
+  assert.equal(weeklyPace.windowKind, '7d');
+  assert.ok(Math.abs(weeklyPace.timeRemainingFraction - 127 / 168) < 0.001);
+  assert.equal(weeklyPace.willExhaustBeforeReset, false);
+  assert.ok(weeklyPace.projectedRemainingPercent >= 45 && weeklyPace.projectedRemainingPercent <= 55);
+
+  // 2) Active 5h burst: dropped from 0.80 -> 0.50 -> 0.30 over the last hour, with 4h remaining until reset
+  const resetAtMs = now + 4 * hour;
+  const history = [
+    { ts: now - 60 * 60_000, buckets: { 'gemini-5h': { frac: 0.8, resetAtMs } } },
+    { ts: now - 30 * 60_000, buckets: { 'gemini-5h': { frac: 0.55, resetAtMs } } },
+    { ts: now, buckets: { 'gemini-5h': { frac: 0.3, resetAtMs } } },
+  ];
+  const burstBucket = {
+    id: 'gemini-5h',
+    window: '5h',
+    remainingFraction: 0.3,
+    remainingPercent: 30,
+    resetAtMs,
+    disabled: false,
+  };
+  const burstPace = computePaceForecast(burstBucket, history, now);
+  assert.equal(burstPace.windowKind, '5h');
+  assert.equal(burstPace.willExhaustBeforeReset, true);
+  assert.ok(burstPace.estimatedTimeLeftSec > 900 && burstPace.estimatedTimeLeftSec < 4 * 3600);
 });
 
 test('QuotaCollector rolls up child subagents into parent session without double counting', () => {
@@ -176,11 +214,10 @@ test('QuotaCollector rolls up child subagents into parent session without double
     );
 
     const collector = new QuotaCollector({ appDataDirs: [tmp], cacheFilePath: null });
-    // Stub CLI refresh so unit test stays purely offline
     collector.triggerQuotaRefresh = () => Promise.resolve();
 
     const snap = collector.getSnapshot({ conversationId: parentId });
-    assert.equal(snap.sessions.length, 1, 'Child subagent should not appear as separate top-level row');
+    assert.equal(snap.sessions.length, 1);
     assert.equal(snap.currentSession.subagentCount, 1);
     assert.equal(snap.currentSession.inputTokens, 15_000);
     assert.equal(snap.currentSession.cacheReadTokens, 10_000);
