@@ -5,6 +5,15 @@
 Stop clicking into **Settings → Models** just to check how much quota you have left.
 `agy-quota-monitor` adds a clean, live **Quota** side panel right next to your chat in **Google Antigravity 2.0** (`+` menu → **Quota**) so you can see at a glance:
 
+![Antigravity Quota Monitor Desktop View](./assets/preview-desktop.png)
+
+<details>
+<summary>View Light &amp; Dark Mode + Burst Warning / Expanded Turn Breakdown</summary>
+
+![Light and Dark Mode Showcase](./assets/preview-themes.png)
+
+</details>
+
 1. **Dual Radial Gauges (`Gemini · 5h` & `7d`)** — Instant visual readout with a **Time-Pace Dot** on the 7d ring (arc ahead of dot = ahead of linear pace) and **EWMA half-life burn-rate forecasts** (`Safe to reset`, `Est. ~49% spare`, or `⚡ ~1.2h to zero`).
 2. **Zero-Scroll Minimalist Layout** — Secondary pools (`Claude / GPT`) collapse into a sleek 1-line summary bar; zero-balance `AI Credits` auto-hide so everything fits on one screen.
 3. **Which conversation is actually eating your quota** — Single-line session micro-bars with sidebar short titles, hover breakdown tooltips, and click-to-expand per-turn history.

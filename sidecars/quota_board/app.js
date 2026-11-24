@@ -104,8 +104,8 @@
       safeReset: '✓ Safe to reset',
       steadyPace: '✓ On pace',
       estSpare: (p) => `Est. ~${p}% spare`,
-      exhaustIn: (t) => `⚡ ~${t} to zero`,
-      exhaust7dIn: (t) => `⚠ ~${t} to zero`,
+      exhaustIn: (t) => `⚡ ~${t} left`,
+      exhaust7dIn: (t) => `⚠ ~${t} left`,
       disabled: 'Disabled',
       tickTip: (timePct, quotaPct) =>
         `Week time left ${timePct}% · Quota left ${quotaPct}% (dot marks linear time pace)`,
@@ -185,8 +185,8 @@
     const d = Math.floor(s / 86400);
     const h = Math.floor((s % 86400) / 3600);
     const m = Math.floor((s % 3600) / 60);
-    if (d > 0) return `${d}d ${String(h).padStart(2, '0')}h`;
-    if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
+    if (d > 0) return h > 0 ? `${d}d ${h}h` : `${d}d`;
+    if (h > 0) return m > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${h}h`;
     return `${m}m`;
   }
 
