@@ -63,7 +63,7 @@ const MAX_SCANNED_CONVERSATIONS = 60;
 const MAX_TRANSCRIPT_CACHE = 120;
 const MAX_TITLE_CACHE = 200;
 const CACHE_SPIKE_THRESHOLD_TOKENS = 25_000;
-const IDLE_CACHE_TTL_SEC = 300;               // >=5m pause typically exceeds warm prompt-cache TTL
+const IDLE_CACHE_TTL_SEC = 3600;              // Empirically verified 60m hard prompt-cache TTL in Antigravity
 const CACHE_SAVINGS_FACTOR = WEIGHTS.input - WEIGHTS.cacheRead; // 0.9x load saved per cached token
 
 /**

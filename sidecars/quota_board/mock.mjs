@@ -23,12 +23,12 @@ export function createMockSnapshot({ mode = 'healthy' } = {}) {
   const activeJsonl = [
     JSON.stringify({
       type: 'USER_INPUT',
-      created_at: new Date(now - 95 * 60_000).toISOString(),
+      created_at: new Date(now - 130 * 60_000).toISOString(),
       content: '<USER_REQUEST>Audit refresh token rotation flow for concurrent 401 race conditions</USER_REQUEST>',
     }),
     JSON.stringify({
       type: 'PLANNER_RESPONSE',
-      created_at: new Date(now - 94 * 60_000).toISOString(),
+      created_at: new Date(now - 129 * 60_000).toISOString(),
       model: 'gemini-4-neon-high',
       input_tokens: 28_000,
       cache_read_tokens: 162_000,
@@ -36,13 +36,13 @@ export function createMockSnapshot({ mode = 'healthy' } = {}) {
     }),
     JSON.stringify({
       type: 'PLANNER_RESPONSE',
-      created_at: new Date(now - 93 * 60_000).toISOString(),
+      created_at: new Date(now - 128 * 60_000).toISOString(),
       model: 'gemini-4-neon-high',
       input_tokens: 6_000,
       cache_read_tokens: 192_000,
       output_tokens: 3_600,
     }),
-    // Turn 2: 38-minute coffee/meeting break -> Prompt Cache TTL expired (`idle_ttl`, +178k wasted)
+    // Turn 2: 73-minute break (>60m hard TTL) -> Prompt Cache TTL expired (`idle_ttl`, +178k wasted)
     JSON.stringify({
       type: 'USER_INPUT',
       created_at: new Date(now - 55 * 60_000).toISOString(),

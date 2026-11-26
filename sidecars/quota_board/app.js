@@ -28,7 +28,7 @@
       infoLoadTitle: '会话折算消耗与缓存诊断口径',
       infoLoadExpr: '折算消耗 = 新输入 × 1 + 缓存读取 × 0.1 + 思考输出 × 4',
       infoLoadDesc:
-        '命中缓存的旧上下文约打 1 折；若因停顿超时（≥5m）、切换模型或后端驱逐导致缓存失效，原本可按 0.1x 读取的历史会被按 1.0x 全价重算（单轮相差 10 倍）。',
+        '命中缓存的旧上下文约打 1 折；若因停顿超时（≥1h 硬 TTL）、切换模型或短间隔内服务端容量驱逐导致缓存失效，原本按 0.1x 读取的历史会被按 1.0x 全价重算（单轮相差 10 倍）。',
       sessionsHeading: '会话消耗',
       modeEffective: '折算消耗 ⇄',
       modeRaw: '原始总计 ⇄',
@@ -54,9 +54,9 @@
       cacheReloadStat: (n, wasted) => `⚠ ${n} 次重算 · 多耗 +${wasted}`,
       cacheHitSummary: (hit, pct, miss) => `命中 ${hit} (${pct}%) · 未命中 ${miss}`,
       cacheSavedSummary: (saved) => `共省 ~${saved}`,
-      reasonIdleChip: (n) => `⏸ 停顿超时 ×${n}`,
+      reasonIdleChip: (n) => `⏸ 停顿 >1h ×${n}`,
       reasonModelChip: (n) => `⇄ 切换模型 ×${n}`,
-      reasonDropChip: (n) => `⚡ 短间断掉缓存 ×${n}`,
+      reasonDropChip: (n) => `⚡ 1h内掉缓存 ×${n}`,
       evIdleTag: (dur) => `⏸ 停顿 ${dur}`,
       evModelTag: (m1, m2) => `⇄ ${m1}→${m2}`,
       evDropTag: (dur) => `⚡ 仅隔 ${dur}`,
@@ -67,8 +67,8 @@
           : ev.reason === 'model_switch'
           ? `中途切换模型（${ev.prevModel || '?'} → ${ev.model || '?'}），重算 ${fmt(ev.reloadedTokens)} 上下文（多耗 +${fmt(ev.wastedEffectiveTokens)}）`
           : `仅隔 ${dur} 即未命中缓存（可能为服务端 KV 驱逐或系统提示词变更），重算 ${fmt(ev.reloadedTokens)}（多耗 +${fmt(ev.wastedEffectiveTokens)}）`),
-      cacheTipIdle: '💡 大上下文停顿超 10 分钟后，先执行 /compact 或新开会话可避免 10 倍全价重算。',
-      cacheTipDrop: '💡 同模型短间隔内掉缓存，通常由服务端 KV 驱逐或系统提示词变动引起。',
+      cacheTipIdle: '💡 实测缓存硬 TTL 约 60 分钟：长会话停顿超 1 小时后，建议先跑 /compact 或新开会话。',
+      cacheTipDrop: '💡 同模型 1 小时内掉缓存，通常由服务端容量路由驱逐或系统提示词变动引起。',
       resetIn: (t) => `${t} 重置`,
       resetSoon: '即将重置',
       safeReset: '✓ 撑到重置宽裕',
@@ -103,7 +103,7 @@
       infoLoadTitle: 'Estimated Load & Cache Diagnostics',
       infoLoadExpr: 'Est. Load = Input × 1 + Cache × 0.1 + Output × 4',
       infoLoadDesc:
-        'Warm cache reads cost ~0.1x vs 1.0x uncached input. When cache misses due to idle TTL (≥5m), model switches, or early backend KV drops, re-prefilling history costs 10× more.',
+        'Warm cache reads cost ~0.1x vs 1.0x uncached input. When cache misses due to idle TTL (≥60m), model switches, or sub-hour backend KV evictions, re-prefilling history costs 10× more.',
       sessionsHeading: 'Sessions',
       modeEffective: 'Est. Load ⇄',
       modeRaw: 'Raw Tokens ⇄',
@@ -129,9 +129,9 @@
       cacheReloadStat: (n, wasted) => `⚠ ${n} reload${n === 1 ? '' : 's'} · +${wasted}`,
       cacheHitSummary: (hit, pct, miss) => `Hit ${hit} (${pct}%) · Uncached ${miss}`,
       cacheSavedSummary: (saved) => `Saved ~${saved}`,
-      reasonIdleChip: (n) => `⏸ Idle >5m ×${n}`,
+      reasonIdleChip: (n) => `⏸ Idle >1h ×${n}`,
       reasonModelChip: (n) => `⇄ Model switch ×${n}`,
-      reasonDropChip: (n) => `⚡ <5m drop ×${n}`,
+      reasonDropChip: (n) => `⚡ <1h drop ×${n}`,
       evIdleTag: (dur) => `⏸ ${dur} idle`,
       evModelTag: (m1, m2) => `⇄ ${m1}→${m2}`,
       evDropTag: (dur) => `⚡ ${dur} gap`,
@@ -142,8 +142,8 @@
           : ev.reason === 'model_switch'
           ? `Model switched (${ev.prevModel || '?'} → ${ev.model || '?'}) — ${fmt(ev.reloadedTokens)} reloaded (+${fmt(ev.wastedEffectiveTokens)} extra load)`
           : `Cache missed after only ${dur} on same model (upstream KV eviction or prompt change) — +${fmt(ev.wastedEffectiveTokens)} extra load`),
-      cacheTipIdle: '💡 After >10m idle on a large thread, run /compact or start fresh to avoid 10× cold reloads.',
-      cacheTipDrop: '💡 Sub-5m cache drops on the same model indicate upstream KV eviction or prompt prefix changes.',
+      cacheTipIdle: '💡 Hard cache TTL is ~60m: after >1h idle on a big thread, run /compact or start fresh to skip 10× cold reloads.',
+      cacheTipDrop: '💡 Sub-hour cache drops on the same model indicate backend capacity eviction or prompt prefix changes.',
       resetIn: (t) => `${t} left`,
       resetSoon: 'resetting',
       safeReset: '✓ Safe to reset',
