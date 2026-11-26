@@ -2,8 +2,8 @@
   "command": "node",
   "args": ["main.mjs"],
   "restart_policy": "always",
-  "display_name": "Quota Monitor",
-  "description": "Live view of global model quota pools (5h & weekly), reset countdowns, and deterministic per-session token workload.",
+  "display_name": "Quota Saver",
+  "description": "Live context weight, 60-minute prompt-cache countdown, remaining turns estimate, and 5h/7d quota bars.",
   "has_web_ui": true,
   "agent_permissions": {
     "allows_user_interactions": false

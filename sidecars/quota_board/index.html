@@ -4,22 +4,22 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="frame-src 'none'; child-src 'none'; object-src 'none'; base-uri 'none'">
-  <title>Quota Audit</title>
+  <title>Quota Saver</title>
   <script src="/preload.js"></script>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <div id="app" class="app">
-    <!-- Ultra-Minimal Header (24px) -->
+    <!-- Compact Header (24px) -->
     <header class="header">
       <div class="header-left">
         <span class="live-dot" id="live-dot" aria-hidden="true"></span>
-        <span class="app-title" id="ui-title">Quota Audit</span>
+        <span class="app-title" id="ui-title">Quota Saver</span>
         <span class="header-sep" aria-hidden="true">·</span>
         <span class="header-sub" id="ui-subtitle">…</span>
       </div>
       <div class="header-actions">
-        <button type="button" id="btn-info" class="icon-btn" aria-expanded="false" aria-controls="info-drawer" title="算法与口径说明 / How it works">
+        <button type="button" id="btn-info" class="icon-btn" aria-expanded="false" aria-controls="info-drawer" title="原理说明 / How it works">
           <span class="info-glyph" aria-hidden="true">ⓘ</span>
         </button>
         <button type="button" id="btn-lang" class="mini-pill-btn" title="Switch language / 切换语言">EN</button>
@@ -31,34 +31,40 @@
       </div>
     </header>
 
-    <!-- Collapsible Help / Audit Method Popover -->
+    <!-- Plain-Language How-It-Works Popover -->
     <section id="info-drawer" class="info-drawer hidden" role="region">
       <div class="info-block">
-        <div class="info-title" id="ui-info-audit-title">什么是「本来能用缓存却没用到」？</div>
+        <div class="info-title" id="ui-info-audit-title"></div>
         <p class="info-text" id="ui-info-audit-desc"></p>
       </div>
       <div class="info-block">
-        <div class="info-title" id="ui-info-load-title">折算消耗口径</div>
+        <div class="info-title" id="ui-info-load-title"></div>
         <code class="info-code" id="ui-info-load-expr"></code>
         <p class="info-text" id="ui-info-load-desc"></p>
       </div>
     </section>
 
     <main class="main">
-      <!-- Zone 1: Slim Global Quota Strip (5h / 7d + Collapsible Secondary Pools) -->
+      <!-- Zone 1: Slim 5h / 7d Quota Strip -->
       <section id="quota-strip-zone" aria-label="Quota Summary"></section>
 
-      <!-- Zone 2: Hero Quota Waste Audit (Why, How much %, Which session, How to fix, Collapsible Evidence) -->
-      <section id="audit-zone" aria-label="Quota Waste Audit"></section>
+      <!-- Zone 2: Live Current Chat Coach (Weight + 60m Cache Timer + Remaining Turns + 1-Click Warm Handoff) -->
+      <section id="coach-zone" aria-label="Current Chat Quota Coach"></section>
 
-      <!-- Zone 3: Compact Sessions Breakdown (with Missed Cache Share) -->
+      <!-- Zone 2.5: Expiring-Soon Alert for Other Heavy Chats (0px when none) -->
+      <section id="expiring-zone" aria-label="Expiring Cache Alerts"></section>
+
+      <!-- Zone 3: Compact Recent Chats -->
       <section class="sessions-zone" aria-labelledby="ui-sessions-heading">
         <div class="zone-bar">
-          <span class="zone-label" id="ui-sessions-heading">会话消耗</span>
-          <button type="button" id="btn-metric-mode" class="mode-switch" title="点击切换折算消耗与原始总 Token"></button>
+          <span class="zone-label" id="ui-sessions-heading">最近对话</span>
+          <button type="button" id="btn-metric-mode" class="mode-switch" title="切换折算消耗与原始 Token"></button>
         </div>
         <div id="sessions-list" class="sessions-list" role="list"></div>
       </section>
+
+      <!-- Zone 4: Quiet 1-Line Collapsible Past Cache Leaks (Verifiable Evidence on Click) -->
+      <section id="leaks-zone" aria-label="Past Cache Leaks"></section>
     </main>
 
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>

@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 376" width="840" height="376" role="img" aria-label="How Antigravity Prompt Cache and Context Weight Affect Quota">
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; stroke: #dde3ea; stroke-width: 1.5; }
+      .card { fill: #ffffff; stroke: #e2e8f0; stroke-width: 1; }
+      .h1 { font: 700 14.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; fill: #0f172a; }
+      .sub { font: 400 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; fill: #64748b; }
+      .lbl { font: 600 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; fill: #1e293b; }
+      .hint { font: 400 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; fill: #64748b; }
+      .val { font: 700 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #0969da; text-anchor: end; }
+      .track { fill: #e6ecf2; }
+      .bar { fill: #0969da; }
+    </style>
+  </defs>
+
+  <rect x="1" y="1" width="838" height="374" rx="14" class="bg"/>
+
+  <!-- Section 1: 1x vs 10x Cache Cliff -->
+  <text x="24" y="32" class="h1">1. Every message re-sends your ENTIRE chat history (same context, one color — length = quota cost)</text>
+  <text x="24" y="50" class="sub">In Antigravity, 1 message triggers ~6–10 internal AI tool steps, and every step carries your whole history:</text>
+
+  <rect x="24" y="62" width="792" height="118" rx="10" class="card"/>
+
+  <!-- Row 1: Warm 1x -->
+  <text x="42" y="88" class="lbl">Reply within 60 min · Same model</text>
+  <text x="258" y="88" class="hint">(Server remembers prefix → ~90% cache discount)</text>
+  <text x="798" y="88" class="val">1× quota</text>
+  <rect x="42" y="96" width="756" height="13" rx="4" class="track"/>
+  <rect x="42" y="96" width="76" height="13" rx="4" class="bar"/>
+
+  <!-- Row 2: Cold 10x -->
+  <text x="42" y="138" class="lbl">Idle &gt; 60 min  OR  Switch models mid-chat</text>
+  <text x="308" y="138" class="hint">(Cache wiped → Entire history re-billed at full price)</text>
+  <text x="798" y="138" class="val">10× quota</text>
+  <rect x="42" y="146" width="756" height="13" rx="4" class="track"/>
+  <rect x="42" y="146" width="756" height="13" rx="4" class="bar"/>
+
+  <!-- Section 2: Cross-Session Handoff Trap -->
+  <text x="24" y="212" class="h1">2. The Cross-Session Trap: When a chat gets heavy (300k–500k), how you switch chats changes everything</text>
+  <text x="24" y="230" class="sub">Why telling a new chat "go read my old conversation" actually burns MORE quota than staying put:</text>
+
+  <rect x="24" y="242" width="792" height="114" rx="10" class="card"/>
+
+  <!-- Row 3: Raw Read Trap -->
+  <text x="42" y="268" class="lbl">✗ Trap: Tell new chat to read old chat raw</text>
+  <text x="302" y="268" class="hint">(Pays 10× uncached read + inherits the full 300k weight)</text>
+  <text x="798" y="268" class="val">Still heavy (10×)</text>
+  <rect x="42" y="276" width="756" height="13" rx="4" class="track"/>
+  <rect x="42" y="276" width="756" height="13" rx="4" class="bar"/>
+
+  <!-- Row 4: Warm Summary Handoff -->
+  <text x="42" y="318" class="lbl">✓ Smart: Ask warm old chat for a 1.5k summary → Paste into new chat</text>
+  <text x="466" y="318" class="hint">(300k → 2k · 99% weight dropped)</text>
+  <text x="798" y="318" class="val">~10× more turns</text>
+  <rect x="42" y="326" width="756" height="13" rx="4" class="track"/>
+  <rect x="42" y="326" width="38" height="13" rx="4" class="bar"/>
+</svg>

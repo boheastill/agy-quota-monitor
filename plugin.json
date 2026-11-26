@@ -1,17 +1,17 @@
 {
   "name": "agy-quota-monitor",
-  "displayName": "Quota Monitor",
-  "version": "3.0.0",
-  "description": "Quota waste auditor for Google Antigravity: finds where prompt cache should have saved 90% but didn't, why it happened, which sessions leaked quota, and verifiable turn-by-turn evidence.",
+  "displayName": "Quota Saver",
+  "version": "3.1.0",
+  "description": "Save Antigravity quota without upgrading: see your chat's hidden context weight, live 60m prompt-cache countdown, estimated turns left (warm vs cold vs fresh chat), and 1-click warm handoff.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
-    "Open the Quota side panel so I can check my 5h and weekly quota",
-    "Explain how session workload and prompt cache discounts are calculated",
+    "Open the Quota panel so I can see my context weight, cache timer, and remaining turns",
+    "Summarize this conversation into a compact handoff brief for a fresh chat",
     "Verify my agy CLI quota connection status"
   ],
   "author": {
     "name": "Bohea Still",
-    "url": "https://github.com/boheastill"
+    "url": "https://boheastill.com"
   },
   "homepage": "https://github.com/boheastill/agy-quota-monitor",
   "repository": {

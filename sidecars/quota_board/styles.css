@@ -1,12 +1,10 @@
 /*
- * Antigravity Quota Monitor v3.0 — Low-Cognitive-Load Quota Audit UI.
+ * Antigravity Quota Saver v3.1 — Ultra-Low-Cognitive-Load Session Coach.
  *
- * Hierarchy:
- * 1. Slim top Quota Bar (5h & 7d + pace, collapsible Claude/GPT)
- * 2. Hero Quota Audit: plain-language cards telling you where cache should have
- *    worked, why it missed, how much % extra you paid, which sessions, and what to
- *    change — with raw turn-level Evidence tucked into a collapsible line.
- * 3. Compact Sessions breakdown.
+ * Visual rules:
+ * 1. Plain human language first: How heavy is this chat? Is cache warm or expiring? How many turns left?
+ * 2. Single-color proportional bars (--qm-primary) for turn comparisons — length alone carries quantity.
+ * 3. Zero report walls: historical cache-miss audit stays folded into a single verifiable line at the bottom.
  */
 
 :root {
@@ -44,6 +42,8 @@
 
 * {
   box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--qm-fg) 18%, transparent) transparent;
 }
 
 html, body {
@@ -75,11 +75,6 @@ button:focus-visible {
   outline-offset: 1px;
 }
 
-* {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--qm-fg) 18%, transparent) transparent;
-}
-
 .app {
   max-width: 560px;
   margin: 0 auto;
@@ -89,7 +84,7 @@ button:focus-visible {
   gap: 8px;
 }
 
-/* ---------- Compact Header ---------- */
+/* ---------- Header ---------- */
 .header {
   display: flex;
   align-items: center;
@@ -113,7 +108,6 @@ button:focus-visible {
   background: var(--qm-ok);
   flex-shrink: 0;
 }
-
 .live-dot.warn { background: var(--qm-warn); }
 .live-dot.danger { background: var(--qm-danger); }
 
@@ -176,7 +170,6 @@ button:focus-visible {
   color: var(--qm-muted);
   transition: background 0.12s, color 0.12s;
 }
-
 .mini-pill-btn:hover {
   background: var(--qm-hover);
   color: var(--qm-fg);
@@ -185,7 +178,6 @@ button:focus-visible {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
-
 .spinning {
   animation: spin 0.8s linear infinite;
 }
@@ -207,17 +199,14 @@ button:focus-visible {
   flex-direction: column;
   gap: 3px;
 }
-
 .info-block + .info-block {
   padding-top: 7px;
   border-top: 1px solid var(--qm-border);
 }
-
 .info-title {
   font-weight: 600;
   color: var(--qm-fg);
 }
-
 .info-code {
   font-family: var(--qm-mono);
   font-size: 11px;
@@ -226,7 +215,6 @@ button:focus-visible {
   background: var(--qm-subtle);
   border: 1px solid var(--qm-border);
 }
-
 .info-text {
   margin: 0;
   color: var(--qm-muted);
@@ -262,7 +250,6 @@ button:focus-visible {
   flex-direction: column;
   gap: 3px;
 }
-
 .quota-pill-col + .quota-pill-col {
   border-left: 1px solid var(--qm-border);
 }
@@ -286,7 +273,6 @@ button:focus-visible {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
-
 .quota-pill-pct.ok { color: var(--qm-ok); }
 .quota-pill-pct.warn { color: var(--qm-warn); }
 .quota-pill-pct.danger { color: var(--qm-danger); }
@@ -304,7 +290,6 @@ button:focus-visible {
   height: 100%;
   border-radius: 999px;
 }
-
 .mini-bar-fill.ok { background: var(--qm-ok); }
 .mini-bar-fill.warn { background: var(--qm-warn); }
 .mini-bar-fill.danger { background: var(--qm-danger); }
@@ -344,7 +329,6 @@ button:focus-visible {
   color: var(--qm-muted);
   transition: background 0.12s;
 }
-
 .sec-toggle-bar:hover {
   background: var(--qm-hover);
 }
@@ -354,7 +338,6 @@ button:focus-visible {
   transition: transform 0.15s ease;
   display: inline-block;
 }
-
 .sec-chevron.open {
   transform: rotate(90deg);
 }
@@ -376,7 +359,6 @@ button:focus-visible {
   color: var(--qm-fg-2);
 }
 
-/* Setup / Notice Compact */
 .notice-card {
   background: var(--qm-card);
   border: 1px dashed var(--qm-card-border);
@@ -385,13 +367,11 @@ button:focus-visible {
   font-size: 11.5px;
   color: var(--qm-muted);
 }
-
 .notice-title {
   color: var(--qm-fg);
   font-weight: 600;
   margin-bottom: 3px;
 }
-
 .cmd-inline {
   margin-top: 5px;
   display: flex;
@@ -403,7 +383,6 @@ button:focus-visible {
   background: var(--qm-subtle);
   border: 1px solid var(--qm-border);
 }
-
 .cmd-inline code {
   font-family: var(--qm-mono);
   font-size: 10.5px;
@@ -411,208 +390,310 @@ button:focus-visible {
   white-space: nowrap;
 }
 
-/* ---------- Zone 2: Hero Quota Waste Audit ---------- */
-.audit-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.audit-hero {
+/* ---------- Zone 2: Hero Current Chat Coach ---------- */
+.coach-card {
   background: var(--qm-card);
   border: 1px solid var(--qm-card-border);
   border-radius: 10px;
   padding: 10px 11px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 9px;
 }
 
-.audit-hero.has-waste {
-  border-color: color-mix(in srgb, var(--qm-warn) 38%, var(--qm-card-border));
+.coach-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
 }
 
-.audit-hero.clean {
-  border-color: color-mix(in srgb, var(--qm-ok) 35%, var(--qm-card-border));
+.coach-head-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
 }
 
-.audit-hero-top {
+.coach-kicker {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--qm-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+
+.coach-chat-title {
+  font-size: 11.5px;
+  color: var(--qm-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-tag {
+  font-family: var(--qm-mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--qm-subtle);
+  border: 1px solid var(--qm-border);
+  color: var(--qm-fg-2);
+  flex-shrink: 0;
+}
+
+/* Signal 1: Backpack Weight */
+.weight-box {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.weight-main-row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
-.audit-hero-kicker {
-  font-size: 10.5px;
-  font-weight: 600;
-  color: var(--qm-muted);
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-}
-
-.audit-hero-scope {
-  font-family: var(--qm-mono);
-  font-size: 10.5px;
-  color: var(--qm-muted);
-}
-
-.audit-hero-headline {
+.weight-headline {
   font-size: 14px;
   font-weight: 700;
   letter-spacing: -0.015em;
   color: var(--qm-fg);
 }
 
-.audit-hero-headline .hl-warn {
-  color: var(--qm-warn);
+.weight-num {
+  font-family: var(--qm-mono);
+  font-variant-numeric: tabular-nums;
 }
 
-.audit-hero-headline .hl-ok {
-  color: var(--qm-ok);
-}
-
-.audit-hero-sub {
-  font-size: 11.5px;
+.weight-pill {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--qm-subtle);
   color: var(--qm-muted);
-  line-height: 1.42;
+}
+.weight-pill.heavy {
+  color: var(--qm-warn);
+  background: color-mix(in srgb, var(--qm-warn) 13%, transparent);
+}
+.weight-pill.very_heavy {
+  color: var(--qm-danger);
+  background: color-mix(in srgb, var(--qm-danger) 13%, transparent);
+}
+.weight-pill.light {
+  color: var(--qm-ok);
+  background: color-mix(in srgb, var(--qm-ok) 12%, transparent);
 }
 
-/* Finding Cards */
-.finding-card {
-  background: var(--qm-card);
-  border: 1px solid var(--qm-card-border);
-  border-radius: 9px;
+.weight-sub {
+  font-size: 11px;
+  color: var(--qm-muted);
+}
+
+/* Signal 2: Live 60m Cache Status Banner */
+.cache-banner {
+  border-radius: 7px;
+  padding: 7px 9px;
+  border-left: 3px solid var(--qm-ok);
+  background: color-mix(in srgb, var(--qm-ok) 7%, var(--qm-subtle));
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cache-banner.expiring {
+  border-left-color: var(--qm-warn);
+  background: color-mix(in srgb, var(--qm-warn) 10%, var(--qm-subtle));
+}
+
+.cache-banner.expired {
+  border-left-color: var(--qm-danger);
+  background: color-mix(in srgb, var(--qm-danger) 9%, var(--qm-subtle));
+}
+
+.cache-banner.light {
+  border-left-color: var(--qm-primary);
+  background: color-mix(in srgb, var(--qm-primary) 6%, var(--qm-subtle));
+}
+
+.cache-banner-title {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--qm-fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.cache-banner-sub {
+  font-size: 11px;
+  color: var(--qm-fg-2);
+  line-height: 1.38;
+}
+
+/* Signal 3: Single-Color Remaining Turns Comparison */
+.turns-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--qm-border);
+}
+
+.turns-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.turns-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--qm-fg-2);
+}
+
+.turns-cal-tag {
+  font-family: var(--qm-mono);
+  font-size: 10px;
+  color: var(--qm-muted);
+}
+
+.turns-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.turn-cmp-row {
+  display: grid;
+  grid-template-columns: 126px 1fr 66px;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+}
+
+.turn-cmp-label {
+  color: var(--qm-fg-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.turn-cmp-track {
+  height: 7px;
+  border-radius: 4px;
+  background: var(--qm-track);
   overflow: hidden;
 }
 
-.finding-body {
-  padding: 7px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+/* ONE single color for all three bars — zero multi-color confusion */
+.turn-cmp-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--qm-primary);
 }
 
-.finding-head {
+.turn-cmp-val {
+  text-align: right;
+  font-family: var(--qm-mono);
+  font-size: 11.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--qm-fg);
+  white-space: nowrap;
+}
+
+/* 1-Click Warm Handoff Action */
+.handoff-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 2px;
+}
+
+.handoff-btn {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--qm-primary) 35%, var(--qm-border));
+  background: color-mix(in srgb, var(--qm-primary) 8%, var(--qm-card));
+  color: var(--qm-primary);
+  font-size: 11.5px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.handoff-btn:hover {
+  background: color-mix(in srgb, var(--qm-primary) 14%, var(--qm-card));
+  border-color: color-mix(in srgb, var(--qm-primary) 55%, var(--qm-border));
+}
+
+.handoff-tip {
+  font-size: 10.5px;
+  color: var(--qm-muted);
+  text-align: center;
+  line-height: 1.35;
+}
+
+/* ---------- Zone 2.5: Other Chats Expiring Soon ---------- */
+.expiring-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.expiring-alert {
+  width: 100%;
+  text-align: left;
+  padding: 6px 9px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--qm-warn) 42%, var(--qm-card-border));
+  background: color-mix(in srgb, var(--qm-warn) 9%, var(--qm-card));
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-}
-
-.finding-title {
-  font-size: 12.5px;
-  font-weight: 650;
-  color: var(--qm-fg);
-  min-width: 0;
-}
-
-.finding-badge {
-  flex-shrink: 0;
-  font-family: var(--qm-mono);
   font-size: 11px;
+  color: var(--qm-fg);
+  transition: background 0.12s;
+}
+
+.expiring-alert:hover {
+  background: color-mix(in srgb, var(--qm-warn) 15%, var(--qm-card));
+}
+
+.expiring-alert-txt {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.expiring-alert-time {
+  font-family: var(--qm-mono);
   font-weight: 700;
   color: var(--qm-warn);
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--qm-warn) 12%, transparent);
-}
-
-.finding-badge.high {
-  color: var(--qm-danger);
-  background: color-mix(in srgb, var(--qm-danger) 12%, transparent);
-}
-
-.finding-why {
-  font-size: 11.5px;
-  color: var(--qm-fg-2);
-  line-height: 1.45;
-}
-
-.finding-where {
-  font-size: 11px;
-  color: var(--qm-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.finding-fix {
-  font-size: 11.5px;
-  font-weight: 500;
-  color: var(--qm-ok);
-  line-height: 1.42;
-  padding-top: 2px;
-}
-
-/* Collapsed Evidence Row inside each Finding Card */
-.ev-toggle-btn {
-  width: 100%;
-  padding: 5px 11px;
-  border-top: 1px dashed var(--qm-border);
-  background: var(--qm-subtle);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--qm-muted);
-  transition: background 0.12s, color 0.12s;
-}
-
-.ev-toggle-btn:hover {
-  background: var(--qm-hover);
-  color: var(--qm-fg);
-}
-
-.ev-drawer {
-  border-top: 1px solid var(--qm-border);
-  padding: 6px 11px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  background: var(--qm-subtle);
-}
-
-.ev-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--qm-muted);
-  min-width: 0;
-}
-
-.ev-sess {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--qm-fg-2);
-}
-
-.ev-meta {
-  font-family: var(--qm-mono);
-  font-size: 10.5px;
   flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 
-.ev-cost {
-  font-family: var(--qm-mono);
-  font-size: 10.5px;
-  font-weight: 600;
-  color: var(--qm-warn);
-  flex-shrink: 0;
-  min-width: 44px;
-  text-align: right;
-}
-
-/* ---------- Zone 3: Ultra-Compact Sessions List ---------- */
+/* ---------- Zone 3: Compact Sessions List ---------- */
 .sessions-zone {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding-top: 2px;
 }
 
 .zone-bar {
@@ -637,7 +718,6 @@ button:focus-visible {
   border-radius: 4px;
   transition: background 0.12s, color 0.12s;
 }
-
 .mode-switch:hover {
   background: var(--qm-hover);
   color: var(--qm-fg);
@@ -661,13 +741,12 @@ button:focus-visible {
 .s-row {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   padding: 4.5px 7px;
   border-radius: 6px;
   cursor: pointer;
   min-width: 0;
 }
-
 .s-row:hover {
   background: var(--qm-hover);
 }
@@ -676,16 +755,19 @@ button:focus-visible {
   background: color-mix(in srgb, var(--qm-primary) 7%, transparent);
 }
 
-.s-marker {
-  width: 6px;
-  height: 6px;
+.s-cache-dot {
+  width: 6.5px;
+  height: 6.5px;
   border-radius: 50%;
   flex-shrink: 0;
-  background: transparent;
+  background: color-mix(in srgb, var(--qm-muted) 45%, transparent);
 }
-
-.s-item.active .s-marker {
-  background: var(--qm-primary);
+.s-cache-dot.warm,
+.s-cache-dot.light {
+  background: var(--qm-ok);
+}
+.s-cache-dot.expiring {
+  background: var(--qm-warn);
 }
 
 .s-title {
@@ -697,21 +779,23 @@ button:focus-visible {
   font-size: 11.5px;
   color: var(--qm-fg-2);
 }
-
 .s-item.active .s-title {
   color: var(--qm-fg);
   font-weight: 600;
 }
 
-.s-waste-tag {
+.s-wt-tag {
   font-family: var(--qm-mono);
   font-size: 10px;
-  color: var(--qm-warn);
+  color: var(--qm-muted);
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--qm-subtle);
   flex-shrink: 0;
 }
 
 .s-bar {
-  width: 52px;
+  width: 46px;
   height: 4.5px;
   border-radius: 999px;
   background: var(--qm-track);
@@ -722,15 +806,14 @@ button:focus-visible {
 .s-bar-fill {
   height: 100%;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--qm-ok) 80%, transparent);
+  background: color-mix(in srgb, var(--qm-primary) 72%, transparent);
 }
-
 .s-item.active .s-bar-fill {
   background: var(--qm-primary);
 }
 
 .s-val {
-  width: 42px;
+  width: 40px;
   text-align: right;
   font-family: var(--qm-mono);
   font-size: 11px;
@@ -738,15 +821,13 @@ button:focus-visible {
   color: var(--qm-muted);
   flex-shrink: 0;
 }
-
 .s-item.active .s-val {
   color: var(--qm-fg);
   font-weight: 600;
 }
 
-/* Inline Expanded Session Detail Drawer */
 .s-detail {
-  padding: 4px 8px 8px 20px;
+  padding: 4px 8px 8px 19px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -772,16 +853,11 @@ button:focus-visible {
   color: var(--qm-muted);
 }
 
-.s-chip.warn {
-  color: var(--qm-warn);
-  border-color: color-mix(in srgb, var(--qm-warn) 40%, transparent);
-}
-
 .turn-mini-list {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: 140px;
+  max-height: 132px;
   overflow-y: auto;
 }
 
@@ -799,6 +875,14 @@ button:focus-visible {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: var(--qm-fg-2);
+}
+
+.spike-tag {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--qm-warn);
+  flex-shrink: 0;
 }
 
 .turn-mini-val {
@@ -807,28 +891,119 @@ button:focus-visible {
   flex-shrink: 0;
 }
 
-.spike-tag {
-  color: var(--qm-warn);
+/* ---------- Zone 4: Quiet 1-Line Collapsible Past Cache Leaks ---------- */
+.leaks-card {
+  background: var(--qm-card);
+  border: 1px solid var(--qm-card-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.leaks-toggle {
+  width: 100%;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--qm-muted);
+  transition: background 0.12s, color 0.12s;
+}
+.leaks-toggle:hover {
+  background: var(--qm-hover);
+  color: var(--qm-fg);
+}
+
+.leaks-badge {
+  font-family: var(--qm-mono);
+  font-size: 10.5px;
   font-weight: 600;
+  color: var(--qm-warn);
+  flex-shrink: 0;
+}
+.leaks-badge.clean {
+  color: var(--qm-ok);
+}
+
+.leaks-drawer {
+  border-top: 1px solid var(--qm-border);
+  padding: 7px 10px 9px;
+  background: var(--qm-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.leak-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.leak-group + .leak-group {
+  padding-top: 6px;
+  border-top: 1px dashed var(--qm-border);
+}
+
+.leak-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--qm-fg);
+}
+
+.leak-ev-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--qm-muted);
+}
+
+.leak-ev-sess {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--qm-fg-2);
+}
+
+.leak-ev-meta {
+  font-family: var(--qm-mono);
+  flex-shrink: 0;
+}
+
+.leak-ev-cost {
+  font-family: var(--qm-mono);
+  font-weight: 600;
+  color: var(--qm-warn);
+  min-width: 42px;
+  text-align: right;
+  flex-shrink: 0;
 }
 
 .empty-hint {
-  padding: 12px;
+  padding: 10px 8px;
   text-align: center;
-  font-size: 11.5px;
   color: var(--qm-muted);
+  font-size: 11.5px;
 }
 
 .toast {
   position: fixed;
-  bottom: 10px;
+  bottom: 12px;
   left: 50%;
   transform: translateX(-50%);
+  padding: 5px 11px;
+  border-radius: 999px;
   background: var(--qm-fg);
   color: var(--qm-bg);
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 500;
-  z-index: 30;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+  z-index: 50;
 }

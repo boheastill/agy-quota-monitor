@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 376" width="840" height="376" role="img" aria-label="一张图看懂 Antigravity 缓存打折与跨会话包袱重量">
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; stroke: #dde3ea; stroke-width: 1.5; }
+      .card { fill: #ffffff; stroke: #e2e8f0; stroke-width: 1; }
+      .h1 { font: 700 14.5px "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .sub { font: 400 12px "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #64748b; }
+      .lbl { font: 600 12.5px "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1e293b; }
+      .hint { font: 400 11.5px "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #64748b; }
+      .val { font: 700 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, "Microsoft YaHei", monospace; fill: #0969da; text-anchor: end; }
+      .track { fill: #e6ecf2; }
+      .bar { fill: #0969da; }
+    </style>
+  </defs>
+
+  <rect x="1" y="1" width="838" height="374" rx="14" class="bg"/>
+
+  <!-- Section 1: 1x vs 10x Cache Cliff -->
+  <text x="24" y="32" class="h1">1. 你每发一句新消息，其实都在把「整本聊天记录」重新发给 AI（同一颜色：柱子越长 = 扣的额度越多）</text>
+  <text x="24" y="50" class="sub">而且 AI 查文件、改代码每轮平均连跑 6～10 步，每一步都要背着整本旧记录。唯一区别是服务器给不给你打 1 折：</text>
+
+  <rect x="24" y="62" width="792" height="118" rx="10" class="card"/>
+
+  <!-- Row 1: Warm 1x -->
+  <text x="42" y="88" class="lbl">60 分钟内 · 同模型接着发</text>
+  <text x="210" y="88" class="hint">（服务器还记着旧内容 → 自动打 1 折，省 90%）</text>
+  <text x="798" y="88" class="val">花 1 份额度</text>
+  <rect x="42" y="96" width="756" height="13" rx="4" class="track"/>
+  <rect x="42" y="96" width="76" height="13" rx="4" class="bar"/>
+
+  <!-- Row 2: Cold 10x -->
+  <text x="42" y="138" class="lbl">停顿超 60 分钟  或  中途切换模型</text>
+  <text x="252" y="138" class="hint">（缓存清零作废 → 整本旧记录按原价重新算一遍）</text>
+  <text x="798" y="138" class="val">花 10 份额度</text>
+  <rect x="42" y="146" width="756" height="13" rx="4" class="track"/>
+  <rect x="42" y="146" width="756" height="13" rx="4" class="bar"/>
+
+  <!-- Section 2: Cross-Session Handoff Trap -->
+  <text x="24" y="212" class="h1">2. 跨会话交接的最大误区：对话太长（30 万～50 万字）想换新帖时，千万别让新对话去读旧对话</text>
+  <text x="24" y="230" class="sub">很多人以为开新对话就能省额度，结果第一句话写「去读一下我刚才那个旧对话」——反而踩了双重坑：</text>
+
+  <rect x="24" y="242" width="792" height="114" rx="10" class="card"/>
+
+  <!-- Row 3: Raw Read Trap -->
+  <text x="42" y="268" class="lbl">✗ 错误交接：让新对话直接读旧对话全文</text>
+  <text x="292" y="268" class="hint">（无缓存全价硬吞 30 万字 + 新对话瞬间也背上 30 万字包袱）</text>
+  <text x="798" y="268" class="val">全价且包袱照背</text>
+  <rect x="42" y="276" width="756" height="13" rx="4" class="track"/>
+  <rect x="42" y="276" width="756" height="13" rx="4" class="bar"/>
+
+  <!-- Row 4: Warm Summary Handoff -->
+  <text x="42" y="318" class="lbl">✓ 正确交接：趁旧对话没满 60 分钟，让它总结 1500 字 → 只贴摘要去新对话</text>
+  <text x="502" y="318" class="hint">（包袱卸掉 99%）</text>
+  <text x="798" y="318" class="val">同样额度多聊 ~10 倍</text>
+  <rect x="42" y="326" width="756" height="13" rx="4" class="track"/>
+  <rect x="42" y="326" width="38" height="13" rx="4" class="bar"/>
+</svg>

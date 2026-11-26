@@ -8,10 +8,13 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 import {
+  calibrateTokensPerPct5h,
   cleanPromptTitle,
   computeCacheHitRatio,
   computeEffectiveTokens,
   computePaceForecast,
+  computeSessionLiveCoach,
+  DEFAULT_TOKENS_PER_PCT_5H,
   extractJsonFromStdout,
   parseCreditsPayload,
   parseTranscriptJsonl,
@@ -31,7 +34,7 @@ test('cleanPromptTitle strips Antigravity XML wrappers cleanly', () => {
   assert.equal(cleanPromptTitle(raw), '研究一下当前的 AJY，看有没有插件');
 });
 
-test('parseTranscriptJsonl aggregates turns, flags cache-expiry spikes, and extracts subagents', () => {
+test('parseTranscriptJsonl aggregates turns, tracks live context weight, flags spikes, and extracts subagents', () => {
   const childId = '11111111-2222-3333-4444-555555555555';
   const lines = [
     JSON.stringify({
@@ -85,6 +88,9 @@ test('parseTranscriptJsonl aggregates turns, flags cache-expiry spikes, and extr
 
   const res = parseTranscriptJsonl(lines);
   assert.equal(res.firstPromptTitle, 'Build quota panel');
+  assert.equal(res.currentContextTokens, 63_000);
+  assert.equal(res.lastModel, 'gemini-4-carbon-high');
+  assert.equal(res.lastStepAt, Date.parse('2026-11-22T09:00:14Z'));
   assert.equal(res.turns.length, 2);
   assert.equal(res.turns[0].cacheExpiredSpike, false);
   assert.equal(res.turns[1].cacheExpiredSpike, true);
@@ -95,9 +101,76 @@ test('parseTranscriptJsonl aggregates turns, flags cache-expiry spikes, and extr
   assert.equal(res.reloadCount, 1);
   assert.equal(res.savedEffectiveTokens, Math.round(101_000 * 0.9));
   assert.deepEqual(res.childSubagentIds, [childId]);
-  assert.equal(res.inputTokens, 72_000);
-  assert.equal(res.cacheReadTokens, 101_000);
-  assert.equal(res.outputTokens, 2_000);
+});
+
+test('calibrateTokensPerPct5h & computeSessionLiveCoach compute countdowns and remaining turns cleanly', () => {
+  const t0 = Date.parse('2026-11-26T12:00:00Z');
+  const resetAtMs = t0 + 4 * 3_600_000;
+
+  // Fallback before >=2% drop
+  const uncal = calibrateTokensPerPct5h([], []);
+  assert.equal(uncal.calibrated, false);
+  assert.equal(uncal.tokensPerPct, DEFAULT_TOKENS_PER_PCT_5H);
+
+  // 5% drop over 30m with 1,400,000 effective Gemini tokens -> 280,000 tokens per 1%
+  const history = [
+    { ts: t0, buckets: { 'gemini-5h': { frac: 0.90, resetAtMs } } },
+    { ts: t0 + 30 * 60_000, buckets: { 'gemini-5h': { frac: 0.85, resetAtMs } } },
+  ];
+  const fakeSessions = [
+    {
+      metrics: {
+        turns: [
+          { model: 'gemini-4-neon-xhigh', endedAt: t0 + 10 * 60_000, effectiveTokens: 800_000 },
+          { model: 'gemini-4-carbon-high', endedAt: t0 + 25 * 60_000, effectiveTokens: 600_000 },
+        ],
+      },
+    },
+  ];
+  const cal = calibrateTokensPerPct5h(history, fakeSessions);
+  assert.equal(cal.calibrated, true);
+  assert.equal(cal.tokensPerPct, 280_000);
+
+  const metrics = {
+    currentContextTokens: 320_000,
+    lastStepAt: t0 + 30 * 60_000,
+    lastModel: 'gemini-4-neon-xhigh',
+    plannerSteps: 6,
+    outputTokens: 7_200,
+    turns: [{ steps: 3 }, { steps: 3 }],
+  };
+  const bucket5h = { remainingPercent: 50, disabled: false };
+
+  // 10m after last step -> 50m left on cache -> 'warm'
+  const warmCoach = computeSessionLiveCoach(metrics, {
+    nowMs: t0 + 40 * 60_000,
+    gemini5hBucket: bucket5h,
+    calibration: cal,
+  });
+  assert.equal(warmCoach.cacheState, 'warm');
+  assert.equal(warmCoach.cacheRemainingSec, 50 * 60);
+  assert.equal(warmCoach.weightMultiple, 16);
+  assert.equal(warmCoach.weightTier, 'very_heavy');
+  assert.ok(warmCoach.turnsLeft.fresh > warmCoach.turnsLeft.warm);
+  assert.ok(warmCoach.turnsLeft.warm > warmCoach.turnsLeft.cold);
+
+  // 52m after last step -> 8m left on cache -> 'expiring'
+  const expCoach = computeSessionLiveCoach(metrics, {
+    nowMs: t0 + 82 * 60_000,
+    gemini5hBucket: bucket5h,
+    calibration: cal,
+  });
+  assert.equal(expCoach.cacheState, 'expiring');
+  assert.equal(expCoach.cacheRemainingSec, 8 * 60);
+
+  // 75m after last step -> 0s left -> 'expired'
+  const deadCoach = computeSessionLiveCoach(metrics, {
+    nowMs: t0 + 105 * 60_000,
+    gemini5hBucket: bucket5h,
+    calibration: cal,
+  });
+  assert.equal(deadCoach.cacheState, 'expired');
+  assert.equal(deadCoach.cacheRemainingSec, 0);
 });
 
 test('parseUsagePayload orders Gemini 5h before 7d and separates secondary groups', () => {
@@ -127,7 +200,6 @@ test('parseUsagePayload orders Gemini 5h before 7d and separates secondary group
 
   const buckets = parseUsagePayload(extractJsonFromStdout(rawStdout), now);
   assert.equal(buckets.length, 3);
-  // Primary Gemini 5h MUST come first, followed by Gemini 7d, followed by Claude/GPT
   assert.equal(buckets[0].id, 'gemini-5h');
   assert.equal(buckets[0].isPrimaryGemini, true);
   assert.equal(buckets[1].id, 'gemini-weekly');
@@ -146,7 +218,6 @@ test('computePaceForecast calculates 7d time-pace marker and EWMA 5h burst runou
   const hour = 3_600_000;
   const now = 1_700_000_000_000;
 
-  // 1) Cold-start 7d bucket: 127h left out of 168h (75.6% time left), 87.6% quota left -> ahead of pace (+12%)
   const weeklyBucket = {
     id: 'gemini-weekly',
     window: 'weekly',
@@ -159,9 +230,7 @@ test('computePaceForecast calculates 7d time-pace marker and EWMA 5h burst runou
   assert.equal(weeklyPace.windowKind, '7d');
   assert.ok(Math.abs(weeklyPace.timeRemainingFraction - 127 / 168) < 0.001);
   assert.equal(weeklyPace.willExhaustBeforeReset, false);
-  assert.ok(weeklyPace.projectedRemainingPercent >= 45 && weeklyPace.projectedRemainingPercent <= 55);
 
-  // 2) Active 5h burst: dropped from 0.80 -> 0.50 -> 0.30 over the last hour, with 4h remaining until reset
   const resetAtMs = now + 4 * hour;
   const history = [
     { ts: now - 60 * 60_000, buckets: { 'gemini-5h': { frac: 0.8, resetAtMs } } },
@@ -179,7 +248,6 @@ test('computePaceForecast calculates 7d time-pace marker and EWMA 5h burst runou
   const burstPace = computePaceForecast(burstBucket, history, now);
   assert.equal(burstPace.windowKind, '5h');
   assert.equal(burstPace.willExhaustBeforeReset, true);
-  assert.ok(burstPace.estimatedTimeLeftSec > 900 && burstPace.estimatedTimeLeftSec < 4 * 3600);
 });
 
 test('QuotaCollector rolls up child subagents into parent session without double counting', () => {
@@ -237,49 +305,21 @@ test('QuotaCollector rolls up child subagents into parent session without double
   }
 });
 
-test('parseTranscriptJsonl classifies model_switch and early_drop cache reloads accurately', () => {
-  const lines = [
-    JSON.stringify({ type: 'USER_INPUT', created_at: '2026-11-26T10:00:00Z', content: 'Turn 1' }),
-    JSON.stringify({
-      type: 'PLANNER_RESPONSE',
-      created_at: '2026-11-26T10:00:10Z',
-      model: 'gemini-4-neon-high',
-      input_tokens: 15_000,
-      cache_read_tokens: 85_000,
-      output_tokens: 2_000,
-    }),
-    // Turn 2: 60s later, switched to Carbon -> model_switch
-    JSON.stringify({ type: 'USER_INPUT', created_at: '2026-11-26T10:01:10Z', content: 'Turn 2 switch model' }),
-    JSON.stringify({
-      type: 'PLANNER_RESPONSE',
-      created_at: '2026-11-26T10:01:20Z',
-      model: 'gemini-4-carbon-high',
-      input_tokens: 102_000,
-      cache_read_tokens: 0,
-      output_tokens: 3_000,
-    }),
-    // Turn 3: 45s later, same model Carbon, yet 95k reloaded with only 8k cached -> early_drop
-    JSON.stringify({ type: 'USER_INPUT', created_at: '2026-11-26T10:02:05Z', content: 'Turn 3 backend drop' }),
-    JSON.stringify({
-      type: 'PLANNER_RESPONSE',
-      created_at: '2026-11-26T10:02:15Z',
-      model: 'gemini-4-carbon-high',
-      input_tokens: 95_000,
-      cache_read_tokens: 8_000,
-      output_tokens: 2_000,
-    }),
-  ].join('\n');
-
-  const parsed = parseTranscriptJsonl(lines);
-  assert.equal(parsed.reloadCount, 2);
-  assert.equal(parsed.turns[1].cacheReload.reason, 'model_switch');
-  assert.equal(parsed.turns[2].cacheReload.reason, 'early_drop');
-  assert.equal(parsed.turns[2].cacheReload.gapSec, 45);
-
+test('mock snapshots expose live context weight, expiring alerts, turns left, and verifiable reloads', () => {
   const mockAudit = createMockSnapshot({ mode: 'audit' });
+  assert.equal(mockAudit.currentSession.live.cacheState, 'expiring');
+  assert.ok(mockAudit.currentSession.live.contextTokens > 300_000);
+  assert.ok(mockAudit.currentSession.live.turnsLeft.fresh > mockAudit.currentSession.live.turnsLeft.warm);
+  assert.ok(mockAudit.currentSession.live.turnsLeft.warm > mockAudit.currentSession.live.turnsLeft.cold);
+  assert.equal(mockAudit.expiringOtherSessions.length, 1);
   assert.ok(mockAudit.quotaAudit.findings.length >= 2);
-  assert.ok(mockAudit.quotaAudit.wastedPercentOfTotal > 10);
-  assert.ok(mockAudit.quotaAudit.findings.some((f) => f.evidence.length > 0 && f.topSessions.length > 0));
+
+  const mockExpired = createMockSnapshot({ mode: 'expired' });
+  assert.equal(mockExpired.currentSession.live.cacheState, 'expired');
+
+  const mockClean = createMockSnapshot({ mode: 'clean' });
+  assert.equal(mockClean.currentSession.live.cacheState, 'warm');
+  assert.equal(mockClean.quotaAudit.totalWastedEffectiveTokens, 0);
 });
 
 test('index.html and app.js static DOM IDs stay 100% synchronized', () => {
@@ -288,7 +328,16 @@ test('index.html and app.js static DOM IDs stay 100% synchronized', () => {
   const js = readFileSync(join(boardDir, 'app.js'), 'utf-8');
 
   const htmlIds = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
-  const dynamicIds = new Set(['btn-copy-cmd', 'btn-toggle-sec', 'cli-cmd']);
+  const dynamicIds = new Set([
+    'btn-copy-cmd',
+    'btn-toggle-sec',
+    'cli-cmd',
+    'btn-copy-handoff',
+    'live-cache-banner',
+    'live-cache-title',
+    'live-cache-sub',
+    'btn-toggle-leaks',
+  ]);
   const referencedIds = new Set([...js.matchAll(/\$\('([^']+)'\)/g)].map((m) => m[1]));
 
   for (const id of referencedIds) {

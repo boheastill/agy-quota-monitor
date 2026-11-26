@@ -64,6 +64,10 @@ const MAX_TRANSCRIPT_CACHE = 120;
 const MAX_TITLE_CACHE = 200;
 const CACHE_SPIKE_THRESHOLD_TOKENS = 25_000;
 const IDLE_CACHE_TTL_SEC = 3600;              // Empirically verified 60m hard prompt-cache TTL in Antigravity
+const CACHE_EXPIRING_SOON_SEC = 15 * 60;      // Warn when <= 15m left before 60m cache cliff
+const LIGHT_CONTEXT_THRESHOLD_TOKENS = 25_000;
+export const BASELINE_FRESH_CONTEXT_TOKENS = 20_000; // Clean new chat (system prompt + tools + ~2k handoff brief)
+export const DEFAULT_TOKENS_PER_PCT_5H = 300_000;    // Empirically measured ~30M effective-token 5h Gemini pool
 const CACHE_SAVINGS_FACTOR = WEIGHTS.input - WEIGHTS.cacheRead; // 0.9x load saved per cached token
 
 /**
@@ -257,6 +261,9 @@ export function parseTranscriptJsonl(jsonlText = '') {
   let outputTokens = 0;
   let startedAt = null;
   let updatedAt = null;
+  let lastStepAt = null;
+  let lastModel = '';
+  let currentContextTokens = 0;
 
   const lines = String(jsonlText ?? '').split('\n');
   for (const rawLine of lines) {
@@ -345,6 +352,13 @@ export function parseTranscriptJsonl(jsonlText = '') {
       const stepCtx = inp + cache;
       if (stepCtx > currentTurn.peakContextTokens) {
         currentTurn.peakContextTokens = stepCtx;
+      }
+      if (stepCtx > 0) {
+        currentContextTokens = stepCtx;
+      }
+      if (inp + cache + out > 0) {
+        if (Number.isFinite(ts)) lastStepAt = ts;
+        if (model) lastModel = model;
       }
 
       const calls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
@@ -454,6 +468,9 @@ export function parseTranscriptJsonl(jsonlText = '') {
     firstPromptTitle,
     startedAt,
     updatedAt,
+    lastStepAt: lastStepAt ?? updatedAt,
+    lastModel,
+    currentContextTokens: currentContextTokens || runningPeakContext,
     totalSteps,
     plannerSteps,
     models: [...modelsUsed],
@@ -469,6 +486,178 @@ export function parseTranscriptJsonl(jsonlText = '') {
     cacheReloads,
     turns: finalizedTurns,
     childSubagentIds: [...childSubagentIds],
+  };
+}
+
+/**
+ * Auto-calibrate how many local weighted Effective Tokens correspond to 1% of the Gemini 5h pool
+ * by correlating persisted `/usage` history drops with local Gemini turn timestamps in the same cycle.
+ * Falls back to `DEFAULT_TOKENS_PER_PCT_5H` (~300k / 1%) until at least a 2% drop is observed.
+ */
+export function calibrateTokensPerPct5h(quotaHistory = [], rawSessionsIter = []) {
+  if (!Array.isArray(quotaHistory) || quotaHistory.length < 2) {
+    return { tokensPerPct: DEFAULT_TOKENS_PER_PCT_5H, calibrated: false, observedDropPct: 0 };
+  }
+
+  // Group contiguous history points belonging to the latest Gemini 5h reset cycle
+  const valid = [];
+  for (const pt of quotaHistory) {
+    const b = pt?.buckets?.['gemini-5h'];
+    if (!b || typeof b.frac !== 'number' || !Number.isFinite(pt.ts)) continue;
+    valid.push({ ts: pt.ts, frac: b.frac, resetAtMs: b.resetAtMs || 0 });
+  }
+  if (valid.length < 2) {
+    return { tokensPerPct: DEFAULT_TOKENS_PER_PCT_5H, calibrated: false, observedDropPct: 0 };
+  }
+
+  const latest = valid[valid.length - 1];
+  let startIdx = valid.length - 1;
+  for (let i = valid.length - 2; i >= 0; i--) {
+    const prev = valid[i];
+    const next = valid[i + 1];
+    if (latest.resetAtMs && prev.resetAtMs && Math.abs(latest.resetAtMs - prev.resetAtMs) > 10 * 60_000) {
+      break;
+    }
+    if (next.frac > prev.frac + 0.015) {
+      break; // Pool reset upward between prev and next
+    }
+    startIdx = i;
+  }
+
+  const startPt = valid[startIdx];
+  const dropPct = (startPt.frac - latest.frac) * 100;
+  if (dropPct < 2.0 || latest.ts <= startPt.ts) {
+    return { tokensPerPct: DEFAULT_TOKENS_PER_PCT_5H, calibrated: false, observedDropPct: 0 };
+  }
+
+  let observedEff = 0;
+  for (const item of rawSessionsIter) {
+    const metrics = item?.metrics || item;
+    if (!metrics || !Array.isArray(metrics.turns)) continue;
+    for (const tr of metrics.turns) {
+      const m = String(tr.model || '').toLowerCase();
+      if (m && (m.includes('claude') || m.includes('gpt') || m.includes('sonnet') || m.includes('opus'))) {
+        continue;
+      }
+      const refTs = tr.endedAt ?? tr.startedAt;
+      if (refTs && refTs >= startPt.ts - 15_000 && refTs <= latest.ts + 5_000) {
+        observedEff += tr.effectiveTokens || 0;
+      }
+    }
+  }
+
+  if (observedEff < 40_000) {
+    return { tokensPerPct: DEFAULT_TOKENS_PER_PCT_5H, calibrated: false, observedDropPct: 0 };
+  }
+
+  const rawRate = observedEff / dropPct;
+  const clamped = Math.round(Math.max(60_000, Math.min(2_000_000, rawRate)));
+  return {
+    tokensPerPct: clamped,
+    calibrated: true,
+    observedDropPct: Number(dropPct.toFixed(1)),
+  };
+}
+
+/**
+ * Compute live plain-language coaching metrics for a session:
+ * - Current context "backpack weight" & multiple vs a fresh 20k chat
+ * - Live 60m prompt-cache countdown & state (`light` | `warm` | `expiring` | `expired`)
+ * - Estimated remaining turns on the 5h pool for:
+ *     (1) staying warm (<60m), (2) cold / model-switched turns, (3) summarizing 2k into a fresh chat.
+ */
+export function computeSessionLiveCoach(metrics, { nowMs = Date.now(), gemini5hBucket = null, calibration = null } = {}) {
+  const contextTokens = Math.max(0, Number(metrics?.currentContextTokens) || 0);
+  const lastStepAt = metrics?.lastStepAt ?? metrics?.updatedAt ?? null;
+  const idleSec =
+    lastStepAt !== null && Number.isFinite(lastStepAt)
+      ? Math.max(0, Math.round((nowMs - lastStepAt) / 1000))
+      : null;
+  const cacheExpiresAtMs =
+    lastStepAt !== null && Number.isFinite(lastStepAt)
+      ? lastStepAt + IDLE_CACHE_TTL_SEC * 1000
+      : null;
+  const cacheRemainingSec =
+    cacheExpiresAtMs !== null ? Math.max(0, Math.round((cacheExpiresAtMs - nowMs) / 1000)) : 0;
+
+  let cacheState = 'light';
+  if (contextTokens >= LIGHT_CONTEXT_THRESHOLD_TOKENS) {
+    if (idleSec === null) cacheState = 'unknown';
+    else if (cacheRemainingSec <= 0) cacheState = 'expired';
+    else if (cacheRemainingSec <= CACHE_EXPIRING_SOON_SEC) cacheState = 'expiring';
+    else cacheState = 'warm';
+  }
+
+  const effectiveCtx = Math.max(BASELINE_FRESH_CONTEXT_TOKENS, contextTokens);
+  const weightMultiple = Math.max(1, Number((effectiveCtx / BASELINE_FRESH_CONTEXT_TOKENS).toFixed(1)));
+
+  let weightTier = 'light';
+  if (contextTokens >= 300_000) weightTier = 'very_heavy';
+  else if (contextTokens >= 150_000) weightTier = 'heavy';
+  else if (contextTokens >= 45_000) weightTier = 'medium';
+
+  const turnsArr = Array.isArray(metrics?.turns) ? metrics.turns.filter((t) => (t.steps || 0) > 0) : [];
+  const turnDenom = Math.max(1, turnsArr.length || metrics?.turnCount || 1);
+  const mainSteps = Math.max(0, Number(metrics?.plannerSteps) || 0);
+  const rawStepsPerTurn = mainSteps > 0 ? mainSteps / turnDenom : 4;
+  const avgStepsPerTurn = Number(Math.max(1, Math.min(12, rawStepsPerTurn)).toFixed(1));
+  const simSteps = Math.max(1, Math.round(avgStepsPerTurn));
+
+  const avgOutPerStep =
+    mainSteps > 0
+      ? Math.max(600, Math.min(3500, Math.round((Number(metrics?.outputTokens) || 1200) / mainSteps)))
+      : 1200;
+  const newInpPerStep = 2_500;
+
+  const warmStepLoad = effectiveCtx * WEIGHTS.cacheRead + newInpPerStep * WEIGHTS.input + avgOutPerStep * WEIGHTS.output;
+  const coldFirstStepLoad = effectiveCtx * WEIGHTS.input + newInpPerStep * WEIGHTS.input + avgOutPerStep * WEIGHTS.output;
+  const freshStepLoad =
+    BASELINE_FRESH_CONTEXT_TOKENS * WEIGHTS.cacheRead + newInpPerStep * WEIGHTS.input + avgOutPerStep * WEIGHTS.output;
+
+  const warmTurnLoad = Math.round(simSteps * warmStepLoad);
+  const coldTurnLoad = Math.round(coldFirstStepLoad + Math.max(0, simSteps - 1) * warmStepLoad);
+  const freshTurnLoad = Math.round(simSteps * freshStepLoad + 2_000);
+
+  const singleStepWarmLoad = Math.round(warmStepLoad);
+  const singleStepColdLoad = Math.round(coldFirstStepLoad);
+
+  const tokensPerPct = calibration?.tokensPerPct || DEFAULT_TOKENS_PER_PCT_5H;
+  const remPct =
+    gemini5hBucket && !gemini5hBucket.disabled && typeof gemini5hBucket.remainingPercent === 'number'
+      ? gemini5hBucket.remainingPercent
+      : null;
+  const remBudgetEff = remPct !== null ? remPct * tokensPerPct : null;
+
+  const turnsLeft =
+    remBudgetEff !== null
+      ? {
+          warm: Math.max(0, Math.floor(remBudgetEff / Math.max(1, warmTurnLoad))),
+          cold: Math.max(0, Math.floor(remBudgetEff / Math.max(1, coldTurnLoad))),
+          fresh: Math.max(0, Math.floor(remBudgetEff / Math.max(1, freshTurnLoad))),
+          singleWarm: Math.max(0, Math.floor(remBudgetEff / Math.max(1, singleStepWarmLoad))),
+          singleCold: Math.max(0, Math.floor(remBudgetEff / Math.max(1, singleStepColdLoad))),
+        }
+      : null;
+
+  return {
+    contextTokens,
+    lastStepAt,
+    lastModel: metrics?.lastModel || '',
+    idleSec,
+    cacheExpiresAtMs,
+    cacheRemainingSec,
+    cacheState,
+    weightMultiple,
+    weightTier,
+    avgStepsPerTurn,
+    perTurnLoad: {
+      warm: warmTurnLoad,
+      cold: coldTurnLoad,
+      fresh: freshTurnLoad,
+    },
+    remaining5hPercent: remPct,
+    calibrated: Boolean(calibration?.calibrated),
+    turnsLeft,
   };
 }
 
@@ -1157,14 +1346,14 @@ export class QuotaCollector {
     return data;
   }
 
-  getSnapshot({ conversationId = '', forceRefresh = false } = {}) {
+  getSnapshot({ conversationId = '', forceRefresh = false, nowMs: customNowMs } = {}) {
     if (forceRefresh || this.quotaState.status === 'initializing' || this.quotaState.stale) {
       this.triggerQuotaRefresh({ force: forceRefresh });
     } else {
       this.triggerQuotaRefresh({ force: false });
     }
 
-    const nowMs = Date.now();
+    const nowMs = typeof customNowMs === 'number' && Number.isFinite(customNowMs) ? customNowMs : Date.now();
     const activeConvId = CONV_ID_RE.test(conversationId) ? conversationId.toLowerCase() : '';
     const appDataDirs = this.findAppDataDirs();
 
@@ -1225,6 +1414,12 @@ export class QuotaCollector {
       }
     }
 
+    const calibration = calibrateTokensPerPct5h(this.quotaHistory, rawSessions.values());
+    const gemini5hBucket =
+      (this.quotaState.buckets || []).find((b) => b.isPrimaryGemini && b.shortWindowLabel === '5h' && !b.disabled) ||
+      (this.quotaState.buckets || []).find((b) => !b.disabled) ||
+      null;
+
     const buildSessionSummary = (convId, includeTurns = false) => {
       const entry = rawSessions.get(convId);
       if (!entry) return null;
@@ -1280,6 +1475,12 @@ export class QuotaCollector {
       const reloadCount = mergedReloads.length;
       const wastedEffectiveTokens = mergedReloads.reduce((acc, r) => acc + r.wastedEffectiveTokens, 0);
 
+      const live = computeSessionLiveCoach(metrics, {
+        nowMs,
+        gemini5hBucket,
+        calibration,
+      });
+
       const out = {
         conversationId: convId,
         title,
@@ -1289,6 +1490,8 @@ export class QuotaCollector {
         plannerSteps,
         models: metrics.models,
         updatedAt: metrics.updatedAt || metrics.mtimeMs,
+        currentContextTokens: live.contextTokens,
+        live,
         inputTokens,
         cacheReadTokens,
         outputTokens,
@@ -1489,6 +1692,26 @@ export class QuotaCollector {
       pace: computePaceForecast(b, this.quotaHistory, nowMs),
     }));
 
+    // Other heavy sessions whose 60m warm cache is within 20 minutes of expiring
+    const expiringOtherSessions = leaderboard
+      .filter(
+        (s) =>
+          s.conversationId !== activeConvId &&
+          s.live &&
+          s.live.contextTokens >= 50_000 &&
+          s.live.cacheRemainingSec > 0 &&
+          s.live.cacheRemainingSec <= 20 * 60
+      )
+      .sort((a, b) => a.live.cacheRemainingSec - b.live.cacheRemainingSec)
+      .slice(0, 3)
+      .map((s) => ({
+        conversationId: s.conversationId,
+        title: s.title,
+        contextTokens: s.live.contextTokens,
+        cacheExpiresAtMs: s.live.cacheExpiresAtMs,
+        cacheRemainingSec: s.live.cacheRemainingSec,
+      }));
+
     const resolvedTitlesSig = leaderboard
       .slice(0, 10)
       .map((s) => s.title)
@@ -1503,7 +1726,10 @@ export class QuotaCollector {
       newestStepMs,
       leaderboard.length,
       auditTotalWasted,
-      currentSession ? `${currentSession.effectiveTokens}:${currentSession.reloadCount}:${currentSession.title}` : 'none',
+      expiringOtherSessions.map((e) => `${e.conversationId.slice(0, 6)}:${Math.floor(e.cacheRemainingSec / 30)}`).join(','),
+      currentSession
+        ? `${currentSession.effectiveTokens}:${currentSession.reloadCount}:${currentSession.live?.cacheState}:${currentSession.title}`
+        : 'none',
       resolvedTitlesSig,
     ].join('|');
 
@@ -1511,12 +1737,14 @@ export class QuotaCollector {
       etag,
       nowMs,
       formula: FORMULA_SPEC,
+      calibration,
       quota: {
         ...this.quotaState,
         buckets: enrichedBuckets,
       },
       quotaAudit,
       cacheHealth,
+      expiringOtherSessions,
       activeConversationId: activeConvId || null,
       currentSession,
       sessions: leaderboard.slice(0, 15),
