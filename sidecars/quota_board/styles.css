@@ -574,7 +574,7 @@ button:focus-visible {
 
 .turn-cmp-row {
   display: grid;
-  grid-template-columns: 126px 1fr 66px;
+  grid-template-columns: 146px 1fr 66px;
   align-items: center;
   gap: 7px;
   font-size: 11.5px;

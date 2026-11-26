@@ -1,10 +1,10 @@
 /**
- * Antigravity Quota Saver v3.1 — Plain-Language Live Session Coach.
+ * Antigravity Quota Monitor v3.1 — Restrained Engineer Session Telemetry & Cache TTL View.
  *
- * Focuses on three instant signals for the chat in front of you:
- *   1. How heavy is your current conversation ("backpack weight" × tool steps)?
- *   2. How many minutes left before the 60-minute prompt cache expires (1× vs 10×)?
- *   3. Roughly how many turns left on your 5h quota if you reply warm, cold, or summarize into a new chat?
+ * Surfaces three practical signals for the active session:
+ *   1. Current context footprint (tokens × avg internal tool steps per turn)
+ *   2. Live 60-minute prompt-cache TTL countdown (0.1× cached prefix vs 1.0× uncached reload)
+ *   3. Auto-calibrated remaining turns on the 5h pool (warm vs cold vs compact handoff to a new session)
  */
 (() => {
   const POLL_INTERVAL_MS = 2500;
@@ -16,116 +16,116 @@
 
   const I18N = {
     zh: {
-      title: '省额度助手',
+      title: '额度与缓存',
       toggleLang: 'EN',
-      infoAuditTitle: '一句话看懂为什么额度掉得快',
+      infoAuditTitle: '上下文体积与 60 分钟缓存机制',
       infoAuditDesc:
-        '你每发一句新消息，其实都在把「从头到尾整本聊天记录」重发给 AI，而且 AI 调工具每轮平均连跑好几步。60 分钟内同模型接着聊，旧记录打 1 折（0.1×）；一旦停超 60 分钟、中途换模型、或让新对话硬读旧对话全文，就会按 10 倍原价重算。',
+        '每次发送消息，系统都会在每一步内部工具调用中携带完整历史上下文。同模型在 60 分钟内续聊可命中前缀缓存（约 0.1× 成本）；闲置超过 60 分钟、中途切换模型、或让新会话直接读取旧会话原始记录，都会触发 1.0× 全量未缓存读取。',
       infoLoadTitle: '折算口径与轮数校准',
       infoLoadExpr: '折算消耗 = 新输入 × 1 + 缓存读取 × 0.1 + 思考输出 × 4',
       infoLoadDesc:
-        '剩余轮数会根据你本机真实的 5h 百分比变化与本地 Token 自动校准；底部折叠栏可随时点开核对历史每一轮明细。',
-      sessionsHeading: '最近对话（绿点=缓存还在）',
+        '预计剩余轮数基于本机观测到的 5h 额度变化与本地 Token 消耗自动校准；底部折叠栏可展开核对具体轮次与间隔。',
+      sessionsHeading: '近期会话（绿点 = 缓存有效）',
       modeEffective: '折算消耗 ⇄',
-      modeRaw: '原始字数 ⇄',
+      modeRaw: '原始 Token ⇄',
       justNow: '刚刚',
       ago: (t) => `${t}前`,
       syncing: '同步中…',
       staleTag: '缓存',
-      initQuota: '正在同步额度…',
-      localOnly: '本地已就绪',
-      cliMissingTitle: '装一次官方 agy CLI 即可显示顶部 5h / 周剩余百分比',
+      initQuota: '正在同步配额…',
+      localOnly: '本地就绪',
+      cliMissingTitle: '安装官方 agy CLI 后可同步顶部 5h / 7d 剩余比例',
       authNeededTitle: '请在终端运行一次 agy 完成登录',
-      errorTitle: '暂未读到云端百分比',
+      errorTitle: '暂未获取到云端配额',
       copy: '复制',
       copied: '已复制',
-      copiedHandoff: '已复制交接指令，直接粘贴发给当前对话即可',
+      copiedHandoff: '已复制交接摘要提示词，粘贴至当前会话即可生成',
       gemini5h: 'Gemini · 5h',
       gemini7d: 'Gemini · 7d',
       otherGroup: 'Claude / GPT',
       creditsShort: 'Credits',
       resetIn: (t) => `${t} 后重置`,
       resetSoon: '即将重置',
-      safeReset: '宽裕',
-      estSpare: (p) => `余 ~${p}%`,
-      exhaustIn: (t) => `⚡ 约 ${t} 耗尽`,
+      safeReset: '充裕',
+      estSpare: (p) => `预计余 ~${p}%`,
+      exhaustIn: (t) => `预计 ~${t} 耗尽`,
 
       // Coach card
-      thisChatKicker: '当前对话',
-      latestChatKicker: '最近对话',
-      freshChatName: '新对话（轻装）',
-      weightHeadline: (tok) => `当前包袱 ${tok}`,
-      weightPillLight: '很轻 · 放心聊',
-      weightPillMed: (mult) => `适中 · 新对话的 ${mult}×`,
-      weightPillHeavy: (mult) => `偏重 · 新对话的 ${mult}×`,
-      weightPillVeryHeavy: (mult) => `极重 · 新对话的 ${mult}×`,
+      thisChatKicker: '当前会话',
+      latestChatKicker: '最近会话',
+      freshChatName: '新会话',
+      weightHeadline: (tok) => `当前上下文 ${tok}`,
+      weightPillLight: '较轻',
+      weightPillMed: (mult) => `新会话的 ${mult}×`,
+      weightPillHeavy: (mult) => `偏重 · 新会话的 ${mult}×`,
+      weightPillVeryHeavy: (mult) => `极重 · 新会话的 ${mult}×`,
       weightSub: (steps) =>
-        `你每发 1 句话，AI 调工具平均连发 ~${steps} 步，每步都得背着这份记录跑`,
-      weightSubFresh: '包袱很轻，现在发消息最省额度',
+        `平均每轮触发 ~${steps} 步工具调用，每步均需携带完整上下文`,
+      weightSubFresh: '当前上下文体积较小，单步开销很低',
 
-      cacheWarmTitle: (rem) => `🟢 缓存还剩 ${rem} 过期 — 有话趁热发（打 1 折）`,
-      cacheWarmSub: '60 分钟内同模型接着聊最省；中途切换模型会让缓存当场作废',
-      cacheExpiringTitle: (rem) => `⚠️ 快过期！还剩 ${rem} — 再不发下次贵 10 倍`,
-      cacheExpiringSub: '要继续就趁现在发；如果准备换话题，点下方按钮趁热生成交接单带去新对话',
-      cacheExpiredTitle: (idle) => `💀 已停 ${idle}，缓存已过期 — 现在发第 1 步按全价重算`,
-      cacheExpiredSub: '如果只是顺手问新问题，直接点左上角 + 开新对话，别在旧长帖里硬接',
-      cacheLightTitle: '🌱 包袱很轻 — 随时发都很省额度',
-      cacheLightSub: '历史记录还很短，就算隔很久再回也不会花多少额度',
+      cacheWarmTitle: (rem) => `● 缓存有效 · 剩余 ${rem}`,
+      cacheWarmSub: '60 分钟内同模型续聊按 ~0.1× 计费；中途切换模型会使缓存失效',
+      cacheExpiringTitle: (rem) => `◐ 缓存将在 ${rem} 后到期`,
+      cacheExpiringSub: '建议趁缓存有效完成收尾，或复制下方指令导出精简交接摘要后再开新会话',
+      cacheExpiredTitle: (idle) => `○ 缓存已到期（已闲置 ${idle}）`,
+      cacheExpiredSub: '在此继续发送将按 1.0× 重读整段历史；若是独立新任务建议直接新建会话',
+      cacheLightTitle: '● 上下文较轻',
+      cacheLightSub: '历史体积尚小，即使间隔较久重读开销也可忽略',
 
-      turnsTitlePct: (pct) => `剩下的 ${pct}%（5h）额度大约还能聊`,
-      turnsTitleOffline: '单轮消耗对比（长条代表同样额度能聊更多轮）',
-      calTagTrue: '已按本机账单校准',
-      calTagEst: '按实测基准估算',
-      rowWarm: '趁热接着聊 (<60m)',
-      rowCold: '晾凉 / 切模型聊',
-      rowFresh: '总结 2k 字去新对话',
+      turnsTitlePct: (pct) => `剩余 ${pct}%（5h）预计可支撑轮数`,
+      turnsTitleOffline: '单位配额可支撑轮数对比（条越长代表越耐用）',
+      calTagTrue: '本机实测校准',
+      calTagEst: '基准估算',
+      rowWarm: '趁缓存续聊 (<60m)',
+      rowCold: '超时 / 切模型重读',
+      rowFresh: '1.5k 摘要 → 新会话',
       turnsUnit: (n) => (n >= 300 ? `~${Math.round(n / 10) * 10}+ 轮` : `~${n} 轮`),
-      multUnit: (m) => `省 ${m}×`,
+      multUnit: (m) => `${m}×`,
 
-      handoffBtn: '📋 复制「趁热压缩 1500 字交接单」指令',
-      handoffTip: '避坑：别让新对话直接去读旧对话全文（等于无缓存全价重背一遍包袱）',
+      handoffBtn: '复制精简交接摘要提示词（用于迁移至新会话）',
+      handoffTip: '注：跨会话交接请直接粘贴摘要，避免让新会话读取旧会话原始记录（会触发 1.0× 全量读取并继承同等体积）',
       handoffPrompt:
-        '请趁当前上下文还在缓存里，帮我把这次对话压缩成一份 1500 字以内的「跨会话交接单」：1. 已完成改动与涉及文件；2. 已确认的事实与踩坑结论；3. 下一步待办与约束条件。请直接输出在单个代码块里，方便我贴到新对话继续（新对话无需再读取本旧对话原始记录）。',
+        '请趁当前上下文仍在缓存有效期内，将本次会话压缩为 1500 字以内的结构化交接摘要：1. 已完成改动与涉及文件路径；2. 已验证的结论与约束条件；3. 下一步待办事项。请直接输出在单个代码块中，便于我粘贴到新会话继续（新会话无需读取本旧会话原始记录）。',
 
       // Expiring other chats
-      expiringAlert: (title, wt) => `⏰ 另一对话《${title}》(${wt}) 缓存快过期`,
+      expiringAlert: (title, wt) => `◐ 后台会话《${title}》(${wt}) 缓存即将到期`,
       expiringRight: (rem) => `剩 ${rem} ▸`,
 
       // Sessions & Leaks
       noSessions: '暂无会话记录',
-      wtBadge: (wt) => `重 ${wt}`,
+      wtBadge: (wt) => `上下文 ${wt}`,
       inpShort: '新输入',
       cacheShort: '缓存',
       outShort: '输出',
       turnsShort: (n) => `${n}轮`,
       stepsShort: (n) => `${n}步`,
       subShort: (n) => `+${n}子代理`,
-      spikeBadge: '⚠全价重算',
+      spikeBadge: '未命中重读',
       sessionHoverTip: (s, cachePct, fmt) =>
-        `${s.title}\n当前包袱 ${fmt(s.currentContextTokens || 0)} · ${s.turnCount} 轮 / ${s.plannerSteps} 步\n缓存命中 ${cachePct}% · 累计折算 ${fmt(s.effectiveTokens)}`,
+        `${s.title}\n当前上下文 ${fmt(s.currentContextTokens || 0)} · ${s.turnCount} 轮 / ${s.plannerSteps} 步\n缓存命中 ${cachePct}% · 累计折算 ${fmt(s.effectiveTokens)}`,
 
-      leaksSummaryWaste: (turns) => `历史白花对账：最近有 ${turns} 轮没吃上缓存（点开核对）`,
-      leaksBadgeWaste: (pct) => `多花 ~${pct}%`,
-      leaksSummaryClean: (hitPct) => `最近缓存命中率 ${hitPct}% · 0 次大额重算`,
-      leaksBadgeClean: '很健康',
-      leakCause_idle: (n) => `停顿超 60m 回来接着发（${n} 轮）`,
-      leakCause_switch: (n) => `长对话中途切换模型（${n} 轮）`,
-      leakCause_drop: (n, dom) => `60m 内意外掉缓存（${n} 轮${dom ? ` · ${dom}` : ''}）`,
-      evTurnMeta: (turnIdx, gap) => `#${turnIdx}轮 · 隔${gap}`,
+      leaksSummaryWaste: (turns) => `历史缓存未命中：${turns} 轮触发全量重读（点击查看明细）`,
+      leaksBadgeWaste: (pct) => `+${pct}% 消耗`,
+      leaksSummaryClean: (hitPct) => `近期缓存命中率 ${hitPct}% · 无大额未命中重读`,
+      leaksBadgeClean: '正常',
+      leakCause_idle: (n) => `闲置超 60m 后继续回复（${n} 轮）`,
+      leakCause_switch: (n) => `长会话中途切换模型（${n} 轮）`,
+      leakCause_drop: (n, dom) => `60m 内缓存提前失效（${n} 轮${dom ? ` · ${dom}` : ''}）`,
+      evTurnMeta: (turnIdx, gap) => `#${turnIdx}轮 · 间隔 ${gap}`,
       evSwitchMeta: (turnIdx, m1, m2) => `#${turnIdx}轮 · ${m1}→${m2}`,
     },
 
     en: {
-      title: 'Quota Saver',
+      title: 'Quota Monitor',
       toggleLang: '中',
-      infoAuditTitle: 'Why quota disappears faster than expected',
+      infoAuditTitle: 'Context Weight & 60-Minute Cache Mechanics',
       infoAuditDesc:
-        'Every message re-sends your entire chat history on every internal AI tool step. Replying within 60m on the same model gets a ~90% cache discount (0.1×). Waiting >60m, switching models mid-thread, or telling a new chat to read an old chat raw triggers a 10× full-price reload.',
+        'Every prompt re-sends your full session history across each internal tool step. Same-model replies within 60m read cached prefix tokens at ~0.1×; pausing >60m, switching models mid-thread, or telling a new session to read an old transcript raw triggers a 1.0× uncached read.',
       infoLoadTitle: 'Weighted Load & Auto-Calibration',
       infoLoadExpr: 'Est. Load = Input × 1 + Cache × 0.1 + Output × 4',
       infoLoadDesc:
-        'Remaining turns auto-calibrate against your observed 5h % drops and local token logs. Expand the bottom line anytime to verify exact turns.',
-      sessionsHeading: 'Recent Chats (green dot = warm cache)',
+        'Remaining turns auto-calibrate against your observed 5h % drops and local token logs. Expand the bottom row anytime to inspect per-turn reload logs.',
+      sessionsHeading: 'Recent Sessions (green = warm cache)',
       modeEffective: 'Est. Load ⇄',
       modeRaw: 'Raw Tokens ⇄',
       justNow: 'just now',
@@ -134,83 +134,83 @@
       staleTag: 'cached',
       initQuota: 'Syncing quota…',
       localOnly: 'local ready',
-      cliMissingTitle: 'Install official agy CLI to show top 5h / 7d % bars',
+      cliMissingTitle: 'Install official agy CLI to sync top 5h / 7d % pools',
       authNeededTitle: 'Run `agy` once in terminal to sign in',
       errorTitle: 'Cloud quota unavailable',
       copy: 'Copy',
       copied: 'Copied',
-      copiedHandoff: 'Handoff prompt copied — paste into this chat before opening a new one',
+      copiedHandoff: 'Handoff prompt copied — paste into this session before opening a new one',
       gemini5h: 'Gemini · 5h',
       gemini7d: 'Gemini · 7d',
       otherGroup: 'Claude / GPT',
       creditsShort: 'Credits',
       resetIn: (t) => `${t} left`,
       resetSoon: 'resetting',
-      safeReset: 'safe',
+      safeReset: 'on pace',
       estSpare: (p) => `~${p}% spare`,
-      exhaustIn: (t) => `⚡ ~${t} left`,
+      exhaustIn: (t) => `~${t} left`,
 
       // Coach card
-      thisChatKicker: 'This Chat',
-      latestChatKicker: 'Latest Chat',
-      freshChatName: 'Fresh Conversation',
-      weightHeadline: (tok) => `Carrying ${tok} context`,
-      weightPillLight: 'Light · cheap',
-      weightPillMed: (mult) => `Medium · ${mult}× fresh chat`,
+      thisChatKicker: 'Current Session',
+      latestChatKicker: 'Latest Session',
+      freshChatName: 'New Session',
+      weightHeadline: (tok) => `Context: ${tok} tokens`,
+      weightPillLight: 'Light',
+      weightPillMed: (mult) => `${mult}× fresh chat`,
       weightPillHeavy: (mult) => `Heavy · ${mult}× fresh chat`,
-      weightPillVeryHeavy: (mult) => `Very heavy · ${mult}× fresh chat`,
+      weightPillVeryHeavy: (mult) => `Heavy · ${mult}× fresh chat`,
       weightSub: (steps) =>
-        `1 message triggers ~${steps} internal AI tool steps — re-sent on every step`,
-      weightSubFresh: 'Lightweight context — messages cost minimal quota right now',
+        `Avg ~${steps} internal tool steps/turn — full context sent on each step`,
+      weightSubFresh: 'Minimal context footprint — low per-step token cost',
 
-      cacheWarmTitle: (rem) => `🟢 Cache warm · ${rem} left — reply now for 0.1× discount`,
-      cacheWarmSub: 'Stay on the same model within 60m; switching models mid-chat wipes the cache',
-      cacheExpiringTitle: (rem) => `⚠️ Expires in ${rem}! Reply now or pay 10× next time`,
-      cacheExpiringSub: 'Send your next message now, or click below to summarize while still discounted',
-      cacheExpiredTitle: (idle) => `💀 Cache expired (${idle} idle) — next reply reloads at full price`,
-      cacheExpiredSub: 'Starting a new subtask? Open a + New Conversation instead of waking a cold heavy thread',
-      cacheLightTitle: '🌱 Lightweight chat — cheap to message anytime',
-      cacheLightSub: 'Short history means negligible reload cost even after a long break',
+      cacheWarmTitle: (rem) => `● Cache warm · ${rem} remaining`,
+      cacheWarmSub: 'Same-model turns within 60m read cached prefix at ~0.1×; model switches clear cache',
+      cacheExpiringTitle: (rem) => `◐ Cache expires in ${rem}`,
+      cacheExpiringSub: 'Wrap up while warm (~0.1×), or export a compact handoff summary below before moving on',
+      cacheExpiredTitle: (idle) => `○ Cache expired (${idle} idle)`,
+      cacheExpiredSub: 'Replying here re-reads full history at 1.0×; start a new session if tackling a separate task',
+      cacheLightTitle: '● Light context',
+      cacheLightSub: 'Small history footprint — uncached reload cost is negligible',
 
-      turnsTitlePct: (pct) => `Est. turns left on your ${pct}% (5h) quota`,
-      turnsTitleOffline: 'Relative messages per quota unit (longer = more turns)',
-      calTagTrue: 'Calibrated to your plan',
-      calTagEst: 'Benchmark estimate',
-      rowWarm: 'Reply warm (<60m)',
-      rowCold: 'Cold / switch model',
-      rowFresh: '2k summary → New chat',
+      turnsTitlePct: (pct) => `Est. turns remaining on ${pct}% (5h) pool`,
+      turnsTitleOffline: 'Relative turns per unit of quota (longer = more turns)',
+      calTagTrue: 'Calibrated',
+      calTagEst: 'Est.',
+      rowWarm: 'Warm (<60m, same model)',
+      rowCold: 'Cold (>60m / switch)',
+      rowFresh: '1.5k summary → New chat',
       turnsUnit: (n) => (n >= 300 ? `~${Math.round(n / 10) * 10}+ turns` : `~${n} turns`),
-      multUnit: (m) => `${m}× more`,
+      multUnit: (m) => `${m}×`,
 
-      handoffBtn: '📋 Copy Warm Handoff Prompt (→ New Chat)',
-      handoffTip: 'Trap alert: Never tell a new chat to read an old chat raw — paste a warm summary instead',
+      handoffBtn: 'Copy Compact Handoff Prompt (→ New Session)',
+      handoffTip: 'Note: Paste a summary into the new session rather than asking it to read this transcript raw (avoids a 1.0× cold read + inherited weight).',
       handoffPrompt:
-        'While our context is still warm in cache, compress this conversation into a <1,500-word handoff brief: (1) completed changes & file paths, (2) verified facts & lessons, (3) exact next steps & constraints. Output inside a single code block so I can paste it into a fresh chat (the new chat must NOT read this old transcript raw).',
+        'While our context is still warm in cache, summarize this session into a concise <1,500-word handoff brief: (1) completed changes & file paths, (2) verified findings & constraints, (3) exact next steps. Output inside a single code block so I can paste it into a new session without reading this old transcript raw.',
 
       // Expiring other chats
-      expiringAlert: (title, wt) => `⏰ "${title}" (${wt}) cache expiring soon`,
+      expiringAlert: (title, wt) => `◐ "${title}" (${wt}) cache expiring`,
       expiringRight: (rem) => `${rem} left ▸`,
 
       // Sessions & Leaks
-      noSessions: 'No conversations yet',
-      wtBadge: (wt) => `${wt} wt`,
+      noSessions: 'No sessions recorded yet',
+      wtBadge: (wt) => `${wt} ctx`,
       inpShort: 'In',
       cacheShort: 'Cache',
       outShort: 'Out',
       turnsShort: (n) => `${n}t`,
       stepsShort: (n) => `${n}s`,
       subShort: (n) => `+${n} sub`,
-      spikeBadge: '⚠Cold reload',
+      spikeBadge: 'Cold reload',
       sessionHoverTip: (s, cachePct, fmt) =>
-        `${s.title}\nContext weight ${fmt(s.currentContextTokens || 0)} · ${s.turnCount} turns / ${s.plannerSteps} steps\nCache ${cachePct}% · Total est. load ${fmt(s.effectiveTokens)}`,
+        `${s.title}\nContext ${fmt(s.currentContextTokens || 0)} · ${s.turnCount} turns / ${s.plannerSteps} steps\nCache ${cachePct}% · Est. load ${fmt(s.effectiveTokens)}`,
 
-      leaksSummaryWaste: (turns) => `Past cache leaks: ${turns} cold reloads (click to verify)`,
-      leaksBadgeWaste: (pct) => `+${pct}% spend`,
-      leaksSummaryClean: (hitPct) => `${hitPct}% cache hit across recent chats · 0 cold reloads`,
+      leaksSummaryWaste: (turns) => `Cold reloads: ${turns} turns missed cache (click to inspect)`,
+      leaksBadgeWaste: (pct) => `+${pct}% load`,
+      leaksSummaryClean: (hitPct) => `${hitPct}% cache hit across recent sessions · 0 cold reloads`,
       leaksBadgeClean: 'Clean',
-      leakCause_idle: (n) => `Resumed heavy chat after >60m idle (${n}×)`,
-      leakCause_switch: (n) => `Switched model mid-thread (${n}×)`,
-      leakCause_drop: (n, dom) => `Dropped within 60m (${n}×${dom ? ` · ${dom}` : ''})`,
+      leakCause_idle: (n) => `Resumed after >60m idle (${n}×)`,
+      leakCause_switch: (n) => `Mid-thread model switch (${n}×)`,
+      leakCause_drop: (n, dom) => `Sub-60m cache eviction (${n}×${dom ? ` · ${dom}` : ''})`,
       evTurnMeta: (turnIdx, gap) => `#${turnIdx} · ${gap} gap`,
       evSwitchMeta: (turnIdx, m1, m2) => `#${turnIdx} · ${m1}→${m2}`,
     },
@@ -530,7 +530,6 @@
       return { session: snap.currentSession, isCurrent: true };
     }
     if (!snap.activeConversationId && Array.isArray(snap.sessions) && snap.sessions.length > 0) {
-      // Standalone browser preview without ?conversationId=... -> spotlight most recently updated session
       const byRecent = snap.sessions.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
       return { session: byRecent[0], isCurrent: false };
     }
@@ -590,7 +589,6 @@
     const { session, isCurrent } = resolveSpotlightSession(snap);
     const nowMs = Date.now();
 
-    // Brand-new empty conversation before Turn 1
     if (!session) {
       el.innerHTML = `
         <div class="coach-card">
@@ -633,7 +631,7 @@
 
     const cacheView = computeLiveCacheView(live, nowMs);
 
-    // Remaining turns or offline relative turn capacity (ALL using one single color!)
+    // Single-color proportional turn comparison
     let turnsHtml = '';
     const tl = live.turnsLeft;
     const ptl = live.perTurnLoad;
@@ -670,7 +668,6 @@
         </div>
       `;
     } else if (ptl && ptl.cold > 0) {
-      // Offline fallback when agy CLI is not installed yet
       const warmMult = Math.max(1, Number((ptl.cold / Math.max(1, ptl.warm)).toFixed(1)));
       const freshMult = Math.max(1, Math.round(ptl.cold / Math.max(1, ptl.fresh)));
       const wWarm = Math.max(6, Math.min(100, Math.round((warmMult / freshMult) * 100)));
@@ -1015,7 +1012,6 @@
       labelEl.textContent = remSec > 0 ? dict.resetIn(fmtCompactDuration(remSec)) : dict.resetSoon;
     }
 
-    // Tick current chat 60m cache countdown live
     const banner = $('live-cache-banner');
     if (banner) {
       const ctxTok = Number(banner.getAttribute('data-ctx-tokens')) || 0;
@@ -1034,7 +1030,6 @@
       }
     }
 
-    // Tick other-chat expiring alerts live
     for (const btn of document.querySelectorAll('[data-exp-ms]')) {
       const expMs = Number(btn.getAttribute('data-exp-ms')) || 0;
       const timeEl = btn.querySelector('.expiring-alert-time');

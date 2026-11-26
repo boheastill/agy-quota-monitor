@@ -1,13 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 376" width="840" height="376" role="img" aria-label="一张图看懂 Antigravity 缓存打折与跨会话包袱重量">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 376" width="840" height="376" role="img" aria-label="Antigravity 前缀缓存有效时间与跨会话交接开销对比">
   <defs>
     <style>
       .bg { fill: #f8fafc; stroke: #dde3ea; stroke-width: 1.5; }
       .card { fill: #ffffff; stroke: #e2e8f0; stroke-width: 1; }
-      .h1 { font: 700 14.5px "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .h1 { font: 700 14px "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
       .sub { font: 400 12px "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #64748b; }
       .lbl { font: 600 12.5px "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1e293b; }
       .hint { font: 400 11.5px "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #64748b; }
-      .val { font: 700 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, "Microsoft YaHei", monospace; fill: #0969da; text-anchor: end; }
+      .val { font: 700 12px ui-monospace, SFMono-Regular, Menlo, Consolas, "Microsoft YaHei", monospace; fill: #0969da; text-anchor: end; }
       .track { fill: #e6ecf2; }
       .bar { fill: #0969da; }
     </style>
@@ -15,43 +15,43 @@
 
   <rect x="1" y="1" width="838" height="374" rx="14" class="bg"/>
 
-  <!-- Section 1: 1x vs 10x Cache Cliff -->
-  <text x="24" y="32" class="h1">1. 你每发一句新消息，其实都在把「整本聊天记录」重新发给 AI（同一颜色：柱子越长 = 扣的额度越多）</text>
-  <text x="24" y="50" class="sub">而且 AI 查文件、改代码每轮平均连跑 6～10 步，每一步都要背着整本旧记录。唯一区别是服务器给不给你打 1 折：</text>
+  <!-- Section 1: 0.1x vs 1.0x Prefix Cache -->
+  <text x="24" y="32" class="h1">1. 前缀缓存计费差异：每一步内部工具调用均需携带完整历史上下文</text>
+  <text x="24" y="50" class="sub">以同一份 300k 上下文为例（单色比例条：长度代表单步配额消耗权重）：</text>
 
   <rect x="24" y="62" width="792" height="118" rx="10" class="card"/>
 
-  <!-- Row 1: Warm 1x -->
-  <text x="42" y="88" class="lbl">60 分钟内 · 同模型接着发</text>
-  <text x="210" y="88" class="hint">（服务器还记着旧内容 → 自动打 1 折，省 90%）</text>
-  <text x="798" y="88" class="val">花 1 份额度</text>
+  <!-- Row 1: Warm 0.1x -->
+  <text x="42" y="88" class="lbl">60 分钟内 · 同模型续聊</text>
+  <text x="196" y="88" class="hint">（命中服务端前缀缓存，约按 0.1× 权重计费）</text>
+  <text x="798" y="88" class="val">0.1×（1 份消耗）</text>
   <rect x="42" y="96" width="756" height="13" rx="4" class="track"/>
   <rect x="42" y="96" width="76" height="13" rx="4" class="bar"/>
 
-  <!-- Row 2: Cold 10x -->
-  <text x="42" y="138" class="lbl">停顿超 60 分钟  或  中途切换模型</text>
-  <text x="252" y="138" class="hint">（缓存清零作废 → 整本旧记录按原价重新算一遍）</text>
-  <text x="798" y="138" class="val">花 10 份额度</text>
+  <!-- Row 2: Cold 1.0x -->
+  <text x="42" y="138" class="lbl">闲置超 60 分钟  或  长会话中途切换模型</text>
+  <text x="278" y="138" class="hint">（缓存失效，整段历史按 1.0× 未缓存原价重读）</text>
+  <text x="798" y="138" class="val">1.0×（10 份消耗）</text>
   <rect x="42" y="146" width="756" height="13" rx="4" class="track"/>
   <rect x="42" y="146" width="756" height="13" rx="4" class="bar"/>
 
-  <!-- Section 2: Cross-Session Handoff Trap -->
-  <text x="24" y="212" class="h1">2. 跨会话交接的最大误区：对话太长（30 万～50 万字）想换新帖时，千万别让新对话去读旧对话</text>
-  <text x="24" y="230" class="sub">很多人以为开新对话就能省额度，结果第一句话写「去读一下我刚才那个旧对话」——反而踩了双重坑：</text>
+  <!-- Section 2: Cross-Session Handoff -->
+  <text x="24" y="212" class="h1">2. 大上下文会话（300k–500k）迁移至新会话的两种方式对比</text>
+  <text x="24" y="230" class="sub">为什么「让新会话直接读取旧会话记录」并不会降低消耗，反而多付一次全量读取：</text>
 
   <rect x="24" y="242" width="792" height="114" rx="10" class="card"/>
 
-  <!-- Row 3: Raw Read Trap -->
-  <text x="42" y="268" class="lbl">✗ 错误交接：让新对话直接读旧对话全文</text>
-  <text x="292" y="268" class="hint">（无缓存全价硬吞 30 万字 + 新对话瞬间也背上 30 万字包袱）</text>
-  <text x="798" y="268" class="val">全价且包袱照背</text>
+  <!-- Row 3: Raw Read -->
+  <text x="42" y="268" class="lbl">让新会话直接读取旧会话原始记录</text>
+  <text x="252" y="268" class="hint">（无缓存按 1.0× 读取 300k + 新会话立即继承完整 300k 体积）</text>
+  <text x="798" y="268" class="val">1.0× 且体积不变</text>
   <rect x="42" y="276" width="756" height="13" rx="4" class="track"/>
   <rect x="42" y="276" width="756" height="13" rx="4" class="bar"/>
 
-  <!-- Row 4: Warm Summary Handoff -->
-  <text x="42" y="318" class="lbl">✓ 正确交接：趁旧对话没满 60 分钟，让它总结 1500 字 → 只贴摘要去新对话</text>
-  <text x="502" y="318" class="hint">（包袱卸掉 99%）</text>
-  <text x="798" y="318" class="val">同样额度多聊 ~10 倍</text>
+  <!-- Row 4: Compact Summary -->
+  <text x="42" y="318" class="lbl">趁旧会话缓存有效导出 1.5k 摘要 → 仅将摘要粘贴至新会话</text>
+  <text x="406" y="318" class="hint">（上下文由 300k 降至 ~20k 基线）</text>
+  <text x="798" y="318" class="val">同配额可多跑 ~10×</text>
   <rect x="42" y="326" width="756" height="13" rx="4" class="track"/>
   <rect x="42" y="326" width="38" height="13" rx="4" class="bar"/>
 </svg>

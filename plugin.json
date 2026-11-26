@@ -1,12 +1,12 @@
 {
   "name": "agy-quota-monitor",
-  "displayName": "Quota Saver",
+  "displayName": "Quota Monitor",
   "version": "3.1.0",
-  "description": "Save Antigravity quota without upgrading: see your chat's hidden context weight, live 60m prompt-cache countdown, estimated turns left (warm vs cold vs fresh chat), and 1-click warm handoff.",
+  "description": "Context weight, 60-minute prompt-cache TTL countdown, and calibrated remaining-turn estimates for Google Antigravity.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
-    "Open the Quota panel so I can see my context weight, cache timer, and remaining turns",
-    "Summarize this conversation into a compact handoff brief for a fresh chat",
+    "Open the Quota panel to check my current context weight, cache TTL, and remaining turns",
+    "Summarize this conversation into a compact handoff brief for a fresh session",
     "Verify my agy CLI quota connection status"
   ],
   "author": {
