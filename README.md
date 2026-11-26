@@ -105,3 +105,7 @@ node scripts/dev-server.mjs --port 4790
 ## License
 
 [MIT](./LICENSE)
+
+---
+
+*Built by [Bohea](https://boheastill.com/?r=gh-agy-quota).*
