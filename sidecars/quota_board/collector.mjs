@@ -63,6 +63,8 @@ const MAX_SCANNED_CONVERSATIONS = 60;
 const MAX_TRANSCRIPT_CACHE = 120;
 const MAX_TITLE_CACHE = 200;
 const CACHE_SPIKE_THRESHOLD_TOKENS = 25_000;
+const IDLE_CACHE_TTL_SEC = 300;               // >=5m pause typically exceeds warm prompt-cache TTL
+const CACHE_SAVINGS_FACTOR = WEIGHTS.input - WEIGHTS.cacheRead; // 0.9x load saved per cached token
 
 /**
  * Compute weighted effective tokens from raw token counts.
@@ -280,14 +282,17 @@ export function parseTranscriptJsonl(jsonlText = '') {
         turnIndex: turns.length + 1,
         prompt: preview || `Turn ${turns.length + 1}`,
         startedAt: Number.isFinite(ts) ? ts : null,
+        firstStepAt: null,
         endedAt: Number.isFinite(ts) ? ts : null,
         steps: 0,
         model: '',
+        firstStepModel: '',
         inputTokens: 0,
         cacheReadTokens: 0,
         outputTokens: 0,
         firstStepInputTokens: null,
         firstStepCacheReadTokens: null,
+        peakContextTokens: 0,
       };
       turns.push(currentTurn);
       pendingSubagentCall = false;
@@ -311,20 +316,25 @@ export function parseTranscriptJsonl(jsonlText = '') {
           turnIndex: turns.length + 1,
           prompt: firstPromptTitle || 'Session start',
           startedAt: Number.isFinite(ts) ? ts : null,
+          firstStepAt: null,
           endedAt: Number.isFinite(ts) ? ts : null,
           steps: 0,
           model: '',
+          firstStepModel: '',
           inputTokens: 0,
           cacheReadTokens: 0,
           outputTokens: 0,
           firstStepInputTokens: null,
           firstStepCacheReadTokens: null,
+          peakContextTokens: 0,
         };
         turns.push(currentTurn);
       }
       if (currentTurn.steps === 0) {
         currentTurn.firstStepInputTokens = inp;
         currentTurn.firstStepCacheReadTokens = cache;
+        currentTurn.firstStepAt = Number.isFinite(ts) ? ts : null;
+        if (model) currentTurn.firstStepModel = model;
       }
       currentTurn.steps += 1;
       if (model) currentTurn.model = model;
@@ -332,6 +342,10 @@ export function parseTranscriptJsonl(jsonlText = '') {
       currentTurn.inputTokens += inp;
       currentTurn.cacheReadTokens += cache;
       currentTurn.outputTokens += out;
+      const stepCtx = inp + cache;
+      if (stepCtx > currentTurn.peakContextTokens) {
+        currentTurn.peakContextTokens = stepCtx;
+      }
 
       const calls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
       pendingSubagentCall = calls.some((c) => c && c.name === 'invoke_subagent');
@@ -345,17 +359,76 @@ export function parseTranscriptJsonl(jsonlText = '') {
     }
   }
 
+  let runningPeakContext = 0;
+  let prevEndedAt = null;
+  let prevModel = '';
+  const cacheReloads = [];
+
   const finalizedTurns = turns
     .filter((t) => t.steps > 0 || t.prompt)
     .map((t) => {
       const total = t.inputTokens + t.cacheReadTokens + t.outputTokens;
       const effective = computeEffectiveTokens(t.inputTokens, t.cacheReadTokens, t.outputTokens);
       const cacheHitRatio = computeCacheHitRatio(t.inputTokens, t.cacheReadTokens);
-      const cacheExpiredSpike =
+
+      const firstInp = t.firstStepInputTokens || 0;
+      const firstCache = t.firstStepCacheReadTokens ?? 0;
+      const isFullColdMiss =
         t.turnIndex > 1 &&
         t.steps > 0 &&
-        t.firstStepCacheReadTokens === 0 &&
-        (t.firstStepInputTokens || 0) >= CACHE_SPIKE_THRESHOLD_TOKENS;
+        firstCache === 0 &&
+        firstInp >= CACHE_SPIKE_THRESHOLD_TOKENS;
+      const isMajorPrefixMiss =
+        t.turnIndex > 1 &&
+        t.steps > 0 &&
+        runningPeakContext >= 30_000 &&
+        firstInp >= CACHE_SPIKE_THRESHOLD_TOKENS &&
+        firstInp > firstCache * 1.5 &&
+        firstInp >= runningPeakContext * 0.5;
+
+      const cacheExpiredSpike = isFullColdMiss || isMajorPrefixMiss;
+      let cacheReload = null;
+
+      if (cacheExpiredSpike) {
+        const refStart = t.startedAt ?? t.firstStepAt;
+        const gapSec =
+          prevEndedAt !== null && refStart !== null && refStart >= prevEndedAt
+            ? Math.round((refStart - prevEndedAt) / 1000)
+            : null;
+        const currFirstModel = t.firstStepModel || t.model || '';
+        let reason = 'early_drop';
+        if (prevModel && currFirstModel && prevModel !== currFirstModel) {
+          reason = 'model_switch';
+        } else if (gapSec !== null && gapSec >= IDLE_CACHE_TTL_SEC) {
+          reason = 'idle_ttl';
+        }
+
+        const reloadedTokens =
+          runningPeakContext > 0 ? Math.min(firstInp, runningPeakContext) : firstInp;
+        const wastedEffectiveTokens = Math.round(reloadedTokens * CACHE_SAVINGS_FACTOR);
+
+        cacheReload = {
+          turnIndex: t.turnIndex,
+          prompt: t.prompt,
+          reason,
+          gapSec,
+          prevModel: prevModel || null,
+          model: currFirstModel || null,
+          reloadedTokens,
+          wastedEffectiveTokens,
+          atMs: t.firstStepAt || t.startedAt || null,
+        };
+        cacheReloads.push(cacheReload);
+      }
+
+      if (t.steps > 0) {
+        if (t.peakContextTokens > runningPeakContext) {
+          runningPeakContext = t.peakContextTokens;
+        }
+        if (t.endedAt !== null) prevEndedAt = t.endedAt;
+        if (t.model) prevModel = t.model;
+      }
+
       return {
         turnIndex: t.turnIndex,
         prompt: t.prompt,
@@ -370,8 +443,12 @@ export function parseTranscriptJsonl(jsonlText = '') {
         effectiveTokens: effective,
         cacheHitRatio,
         cacheExpiredSpike,
+        cacheReload,
       };
     });
+
+  const savedEffectiveTokens = Math.round(cacheReadTokens * CACHE_SAVINGS_FACTOR);
+  const wastedEffectiveTokens = cacheReloads.reduce((acc, r) => acc + r.wastedEffectiveTokens, 0);
 
   return {
     firstPromptTitle,
@@ -386,6 +463,10 @@ export function parseTranscriptJsonl(jsonlText = '') {
     totalTokens: inputTokens + cacheReadTokens + outputTokens,
     effectiveTokens: computeEffectiveTokens(inputTokens, cacheReadTokens, outputTokens),
     cacheHitRatio: computeCacheHitRatio(inputTokens, cacheReadTokens),
+    savedEffectiveTokens,
+    reloadCount: cacheReloads.length,
+    wastedEffectiveTokens,
+    cacheReloads,
     turns: finalizedTurns,
     childSubagentIds: [...childSubagentIds],
   };
@@ -1155,6 +1236,16 @@ export class QuotaCollector {
       let plannerSteps = metrics.plannerSteps;
       let subagentCount = 0;
 
+      const apiTitle = this.resolveAgentApiTitle(convId);
+      const title = apiTitle || metrics.firstPromptTitle || `Session ${convId.slice(0, 8)}`;
+
+      const mergedReloads = (metrics.cacheReloads || []).map((r) => ({
+        ...r,
+        conversationId: convId,
+        sessionTitle: title,
+        isSubagent: false,
+      }));
+
       const visited = new Set([convId]);
       const queue = [...metrics.childSubagentIds];
       while (queue.length > 0) {
@@ -1169,16 +1260,25 @@ export class QuotaCollector {
         cacheReadTokens += subMetrics.cacheReadTokens;
         outputTokens += subMetrics.outputTokens;
         plannerSteps += subMetrics.plannerSteps;
+        for (const r of subMetrics.cacheReloads || []) {
+          mergedReloads.push({
+            ...r,
+            conversationId: convId,
+            sessionTitle: title,
+            isSubagent: true,
+          });
+        }
         for (const grandChild of subMetrics.childSubagentIds) {
           if (!visited.has(grandChild)) queue.push(grandChild);
         }
       }
 
-      const apiTitle = this.resolveAgentApiTitle(convId);
-      const title = apiTitle || metrics.firstPromptTitle || `Session ${convId.slice(0, 8)}`;
       const totalTokens = inputTokens + cacheReadTokens + outputTokens;
       const effectiveTokens = computeEffectiveTokens(inputTokens, cacheReadTokens, outputTokens);
       const cacheHitRatio = computeCacheHitRatio(inputTokens, cacheReadTokens);
+      const savedEffectiveTokens = Math.round(cacheReadTokens * CACHE_SAVINGS_FACTOR);
+      const reloadCount = mergedReloads.length;
+      const wastedEffectiveTokens = mergedReloads.reduce((acc, r) => acc + r.wastedEffectiveTokens, 0);
 
       const out = {
         conversationId: convId,
@@ -1195,24 +1295,89 @@ export class QuotaCollector {
         totalTokens,
         effectiveTokens,
         cacheHitRatio,
+        savedEffectiveTokens,
+        reloadCount,
+        wastedEffectiveTokens,
       };
       if (includeTurns) {
         out.turns = metrics.turns;
+        out.cacheReloads = mergedReloads;
       }
-      return out;
+      return { summary: out, reloads: mergedReloads };
     };
 
-    const currentSession = activeConvId ? buildSessionSummary(activeConvId, true) : null;
+    const currentBuilt = activeConvId ? buildSessionSummary(activeConvId, true) : null;
+    const currentSession = currentBuilt ? currentBuilt.summary : null;
 
     const leaderboard = [];
+    const reloadsByConv = new Map();
+    if (currentBuilt) {
+      reloadsByConv.set(activeConvId, currentBuilt.reloads);
+    }
+
     for (const convId of rawSessions.keys()) {
       if (allChildIds.has(convId) && convId !== activeConvId) continue;
-      const summary = buildSessionSummary(convId, false);
-      if (summary && summary.totalTokens > 0) {
-        leaderboard.push(summary);
+      const built = buildSessionSummary(convId, false);
+      if (built && built.summary.totalTokens > 0) {
+        leaderboard.push(built.summary);
+        reloadsByConv.set(convId, built.reloads);
       }
     }
     leaderboard.sort((a, b) => b.effectiveTokens - a.effectiveTokens);
+
+    // Aggregate Prompt Cache Health over the active 5h window (fallback: recent sessions)
+    const recent5h = leaderboard.filter((s) => s.updatedAt && nowMs - s.updatedAt <= 5 * HOUR_MS);
+    const scopeSessions =
+      recent5h.length > 0
+        ? recent5h
+        : currentSession
+        ? [currentSession]
+        : leaderboard.slice(0, 6);
+    const scopeKind = recent5h.length > 0 ? '5h' : 'recent';
+
+    let chInput = 0;
+    let chCache = 0;
+    let chSaved = 0;
+    let chWasted = 0;
+    const chEvents = [];
+    const byReason = { idle_ttl: 0, model_switch: 0, early_drop: 0 };
+
+    for (const s of scopeSessions) {
+      chInput += s.inputTokens;
+      chCache += s.cacheReadTokens;
+      chSaved += s.savedEffectiveTokens || 0;
+      chWasted += s.wastedEffectiveTokens || 0;
+      const evs = reloadsByConv.get(s.conversationId) || [];
+      for (const ev of evs) {
+        if (byReason[ev.reason] !== undefined) byReason[ev.reason] += 1;
+        chEvents.push({
+          ...ev,
+          isCurrentSession: Boolean(activeConvId && s.conversationId === activeConvId),
+        });
+      }
+    }
+
+    chEvents.sort((a, b) => {
+      if ((b.atMs || 0) !== (a.atMs || 0)) return (b.atMs || 0) - (a.atMs || 0);
+      if (a.isCurrentSession !== b.isCurrentSession) return a.isCurrentSession ? -1 : 1;
+      return b.wastedEffectiveTokens - a.wastedEffectiveTokens;
+    });
+
+    const cacheHealth =
+      scopeSessions.length > 0
+        ? {
+            scope: scopeKind,
+            sessionCount: scopeSessions.length,
+            hitRatio: computeCacheHitRatio(chInput, chCache),
+            inputTokens: chInput,
+            cacheReadTokens: chCache,
+            savedEffectiveTokens: chSaved,
+            reloadCount: chEvents.length,
+            wastedEffectiveTokens: chWasted,
+            byReason,
+            events: chEvents.slice(0, 8),
+          }
+        : null;
 
     // Enrich buckets with live EWMA half-life pace forecasts
     const enrichedBuckets = (this.quotaState.buckets || []).map((b) => ({
@@ -1233,7 +1398,7 @@ export class QuotaCollector {
       activeConvId,
       newestStepMs,
       leaderboard.length,
-      currentSession ? `${currentSession.effectiveTokens}:${currentSession.title}` : 'none',
+      currentSession ? `${currentSession.effectiveTokens}:${currentSession.reloadCount}:${currentSession.title}` : 'none',
       resolvedTitlesSig,
     ].join('|');
 
@@ -1245,6 +1410,7 @@ export class QuotaCollector {
         ...this.quotaState,
         buckets: enrichedBuckets,
       },
+      cacheHealth,
       activeConversationId: activeConvId || null,
       currentSession,
       sessions: leaderboard.slice(0, 15),

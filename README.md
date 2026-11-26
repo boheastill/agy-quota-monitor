@@ -14,9 +14,10 @@ Stop clicking into **Settings → Models** just to check how much quota you have
 
 </details>
 
-1. **Dual Radial Gauges (`Gemini · 5h` & `7d`)** — Instant visual readout with a **Time-Pace Dot** on the 7d ring (arc ahead of dot = ahead of linear pace) and **EWMA half-life burn-rate forecasts** (`Safe to reset`, `Est. ~49% spare`, or `⚡ ~1.2h to zero`).
-2. **Zero-Scroll Minimalist Layout** — Secondary pools (`Claude / GPT`) collapse into a sleek 1-line summary bar; zero-balance `AI Credits` auto-hide so everything fits on one screen.
-3. **Which conversation is actually eating your quota** — Single-line session micro-bars with sidebar short titles, hover breakdown tooltips, and click-to-expand per-turn history.
+1. **Dual Radial Gauges (`Gemini · 5h` & `7d`)** — Instant visual readout with a **Time-Pace Dot** on the 7d ring (arc ahead of dot = ahead of linear pace) and **EWMA half-life burn-rate forecasts** (`Safe to reset`, `Est. ~30% spare`, or `⚡ ~51m left`).
+2. **Prompt Cache Health & Invalidation Forensics (`Cache · 5h`)** — Compact 1-line strip tracking your live cache hit rate, load saved, and **exact cache-reload spikes** separated by root cause: **`⏸ Idle >5m`** (TTL expired after a break), **`⇄ Model switch`**, or **`⚡ <5m drop`** (unexpected backend KV eviction / prompt prefix change), plus exact extra load wasted.
+3. **Zero-Scroll Minimalist Layout** — Secondary pools (`Claude / GPT`) and cache diagnostics stay tucked into sleek 1-line strips until clicked; zero-balance `AI Credits` auto-hide so everything fits on one screen.
+4. **Which conversation is actually eating your quota** — Single-line session micro-bars with sidebar short titles, reload badges (`⚡1`), hover breakdown tooltips, and click-to-expand per-turn history.
 
 ---
 

@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { QuotaCollector } from '../sidecars/quota_board/collector.mjs';
+import { createMockSnapshot } from '../sidecars/quota_board/mock.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const boardDir = join(__dirname, '..', 'sidecars', 'quota_board');
@@ -21,6 +22,7 @@ const portArgIdx = process.argv.indexOf('--port');
 const PORT = portArgIdx >= 0 && process.argv[portArgIdx + 1]
   ? Number(process.argv[portArgIdx + 1])
   : Number(process.env.PORT || 4790);
+const FORCE_MOCK = process.argv.includes('--mock') || process.env.AGY_QUOTA_MOCK === '1';
 
 const collector = new QuotaCollector();
 
@@ -56,7 +58,11 @@ const server = createServer((req, res) => {
     const conv = url.searchParams.get('conversationId') || '';
     const etag = url.searchParams.get('etag') || '';
     const forceRefresh = url.searchParams.get('refresh') === '1';
-    const snap = collector.getSnapshot({ conversationId: conv, forceRefresh });
+    const useMock = FORCE_MOCK || url.searchParams.get('mock') === '1';
+    const mockMode = url.searchParams.get('mode') || 'healthy';
+    const snap = useMock
+      ? createMockSnapshot({ mode: mockMode })
+      : collector.getSnapshot({ conversationId: conv, forceRefresh });
     const body = !forceRefresh && etag && etag === snap.etag
       ? { unchanged: true, etag: snap.etag, nowMs: snap.nowMs }
       : snap;

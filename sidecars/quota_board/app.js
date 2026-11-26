@@ -1,10 +1,11 @@
 /**
- * Antigravity Quota Monitor v2.0 — Minimalist Single-Screen Instrument Cluster.
+ * Antigravity Quota Monitor v2.1 — Minimalist Single-Screen Instrument Cluster.
  *
  * Features:
  * - Dual SVG radial gauges for Gemini 5h & 7d pools (with 7d Time-Pace marker dot)
  * - EWMA half-life burn-rate & runout forecast
  * - Collapsible 1-line strip for secondary pools (Claude/GPT) & non-zero AI Credits
+ * - Collapsible 1-line Prompt Cache Health & Invalidation Diagnostic strip (Idle TTL vs Model Switch vs Early Drop)
  * - Unified single-screen session micro-bars with hover tooltips & click-to-expand turn drawer
  */
 (() => {
@@ -24,10 +25,10 @@
       infoPaceTitle: '圆环刻度点与续航预测（EWMA 半衰期算法）',
       infoPaceDesc:
         '• 7d 圆环上的小圆点代表「本周剩余时间比例」：色环包住圆点说明额度比时间充裕，退到圆点后说明超速。\n• 续航预测采用指数衰减加权（5h 半衰期 30 分钟，7d 半衰期 12 小时融合周期基线）：越近的操作权重越高，兼顾灵敏度与稳定性。',
-      infoLoadTitle: '会话折算消耗口径',
+      infoLoadTitle: '会话折算消耗与缓存诊断口径',
       infoLoadExpr: '折算消耗 = 新输入 × 1 + 缓存读取 × 0.1 + 思考输出 × 4',
       infoLoadDesc:
-        '命中缓存的旧上下文约打 1 折，思考与输出约为新输入的 4 倍。折算值反映哪个对话真正在花你的额度（悬停任意会话可看原始三项明细）。',
+        '命中缓存的旧上下文约打 1 折；若因停顿超时（≥5m）、切换模型或后端驱逐导致缓存失效，原本可按 0.1x 读取的历史会被按 1.0x 全价重算（单轮相差 10 倍）。',
       sessionsHeading: '会话消耗',
       modeEffective: '折算消耗 ⇄',
       modeRaw: '原始总计 ⇄',
@@ -46,6 +47,28 @@
       gemini7d: 'Gemini · 本周',
       otherGroup: 'Claude / GPT',
       creditsShort: 'Credits',
+      cacheLabel5h: '缓存 · 5h',
+      cacheLabelRecent: '缓存健康',
+      cacheHitBadge: (pct) => `${pct}% 命中`,
+      cacheZeroReloads: (saved) => `✓ 0 失效 · 省 ${saved}`,
+      cacheReloadStat: (n, wasted) => `⚠ ${n} 次重算 · 多耗 +${wasted}`,
+      cacheHitSummary: (hit, pct, miss) => `命中 ${hit} (${pct}%) · 未命中 ${miss}`,
+      cacheSavedSummary: (saved) => `共省 ~${saved}`,
+      reasonIdleChip: (n) => `⏸ 停顿超时 ×${n}`,
+      reasonModelChip: (n) => `⇄ 切换模型 ×${n}`,
+      reasonDropChip: (n) => `⚡ 短间断掉缓存 ×${n}`,
+      evIdleTag: (dur) => `⏸ 停顿 ${dur}`,
+      evModelTag: (m1, m2) => `⇄ ${m1}→${m2}`,
+      evDropTag: (dur) => `⚡ 仅隔 ${dur}`,
+      evHoverTip: (ev, fmt, dur) =>
+        `[${ev.sessionTitle}] 第 #${ev.turnIndex} 轮：${ev.prompt}\n` +
+        (ev.reason === 'idle_ttl'
+          ? `距上轮停顿 ${dur} 触发缓存过期，重算 ${fmt(ev.reloadedTokens)} 上下文（多耗 +${fmt(ev.wastedEffectiveTokens)} 折算额度）`
+          : ev.reason === 'model_switch'
+          ? `中途切换模型（${ev.prevModel || '?'} → ${ev.model || '?'}），重算 ${fmt(ev.reloadedTokens)} 上下文（多耗 +${fmt(ev.wastedEffectiveTokens)}）`
+          : `仅隔 ${dur} 即未命中缓存（可能为服务端 KV 驱逐或系统提示词变更），重算 ${fmt(ev.reloadedTokens)}（多耗 +${fmt(ev.wastedEffectiveTokens)}）`),
+      cacheTipIdle: '💡 大上下文停顿超 10 分钟后，先执行 /compact 或新开会话可避免 10 倍全价重算。',
+      cacheTipDrop: '💡 同模型短间隔内掉缓存，通常由服务端 KV 驱逐或系统提示词变动引起。',
       resetIn: (t) => `${t} 重置`,
       resetSoon: '即将重置',
       safeReset: '✓ 撑到重置宽裕',
@@ -67,7 +90,7 @@
       subShort: (n) => `+${n}子代理`,
       spikeBadge: '⚠缓存重算',
       sessionHoverTip: (s, cachePct, fmt) =>
-        `${s.title}\n${s.turnCount} 轮 · ${s.plannerSteps} 步${s.subagentCount ? ` · 含 ${s.subagentCount} 个子代理` : ''}\n缓存命中 ${cachePct}% · 原始总计 ${fmt(s.totalTokens)}\n新输入 ${fmt(s.inputTokens)} / 缓存 ${fmt(s.cacheReadTokens)} / 输出 ${fmt(s.outputTokens)}`,
+        `${s.title}\n${s.turnCount} 轮 · ${s.plannerSteps} 步${s.subagentCount ? ` · 含 ${s.subagentCount} 个子代理` : ''}\n缓存命中 ${cachePct}%${s.reloadCount ? ` · ${s.reloadCount} 次重算 (+${fmt(s.wastedEffectiveTokens)})` : ''} · 原始总计 ${fmt(s.totalTokens)}\n新输入 ${fmt(s.inputTokens)} / 缓存 ${fmt(s.cacheReadTokens)} / 输出 ${fmt(s.outputTokens)}`,
       clickExpandTip: '（点击展开每轮明细）',
       clickJumpTip: '（点击切换到该会话）',
     },
@@ -77,10 +100,10 @@
       infoPaceTitle: 'Time-Pace Dot & EWMA Burn Forecast',
       infoPaceDesc:
         '• The dot on the 7d ring marks remaining week time: arc ahead of dot = ahead of pace; behind dot = burning fast.\n• Burn-rate uses exponentially weighted decay (30m half-life for 5h, 12h half-life + cycle baseline for 7d) for responsive, non-jumpy estimates.',
-      infoLoadTitle: 'Estimated Session Load',
+      infoLoadTitle: 'Estimated Load & Cache Diagnostics',
       infoLoadExpr: 'Est. Load = Input × 1 + Cache × 0.1 + Output × 4',
       infoLoadDesc:
-        'Cached context reads cost ~10% of new input, while thinking + replies cost ~4x. Hover any session row for full raw breakdown.',
+        'Warm cache reads cost ~0.1x vs 1.0x uncached input. When cache misses due to idle TTL (≥5m), model switches, or early backend KV drops, re-prefilling history costs 10× more.',
       sessionsHeading: 'Sessions',
       modeEffective: 'Est. Load ⇄',
       modeRaw: 'Raw Tokens ⇄',
@@ -99,6 +122,28 @@
       gemini7d: 'Gemini · 7d',
       otherGroup: 'Claude / GPT',
       creditsShort: 'Credits',
+      cacheLabel5h: 'Cache · 5h',
+      cacheLabelRecent: 'Cache',
+      cacheHitBadge: (pct) => `${pct}% hit`,
+      cacheZeroReloads: (saved) => `✓ 0 reloads · ${saved} saved`,
+      cacheReloadStat: (n, wasted) => `⚠ ${n} reload${n === 1 ? '' : 's'} · +${wasted}`,
+      cacheHitSummary: (hit, pct, miss) => `Hit ${hit} (${pct}%) · Uncached ${miss}`,
+      cacheSavedSummary: (saved) => `Saved ~${saved}`,
+      reasonIdleChip: (n) => `⏸ Idle >5m ×${n}`,
+      reasonModelChip: (n) => `⇄ Model switch ×${n}`,
+      reasonDropChip: (n) => `⚡ <5m drop ×${n}`,
+      evIdleTag: (dur) => `⏸ ${dur} idle`,
+      evModelTag: (m1, m2) => `⇄ ${m1}→${m2}`,
+      evDropTag: (dur) => `⚡ ${dur} gap`,
+      evHoverTip: (ev, fmt, dur) =>
+        `[${ev.sessionTitle}] Turn #${ev.turnIndex}: ${ev.prompt}\n` +
+        (ev.reason === 'idle_ttl'
+          ? `Idle ${dur} before turn — ${fmt(ev.reloadedTokens)} context reloaded cold (+${fmt(ev.wastedEffectiveTokens)} extra load vs warm cache)`
+          : ev.reason === 'model_switch'
+          ? `Model switched (${ev.prevModel || '?'} → ${ev.model || '?'}) — ${fmt(ev.reloadedTokens)} reloaded (+${fmt(ev.wastedEffectiveTokens)} extra load)`
+          : `Cache missed after only ${dur} on same model (upstream KV eviction or prompt change) — +${fmt(ev.wastedEffectiveTokens)} extra load`),
+      cacheTipIdle: '💡 After >10m idle on a large thread, run /compact or start fresh to avoid 10× cold reloads.',
+      cacheTipDrop: '💡 Sub-5m cache drops on the same model indicate upstream KV eviction or prompt prefix changes.',
       resetIn: (t) => `${t} left`,
       resetSoon: 'resetting',
       safeReset: '✓ Safe to reset',
@@ -120,7 +165,7 @@
       subShort: (n) => `+${n} sub`,
       spikeBadge: '⚠Cache reload',
       sessionHoverTip: (s, cachePct, fmt) =>
-        `${s.title}\n${s.turnCount} turns · ${s.plannerSteps} steps${s.subagentCount ? ` · +${s.subagentCount} subagents` : ''}\nCache ${cachePct}% · Raw total ${fmt(s.totalTokens)}\nInput ${fmt(s.inputTokens)} / Cache ${fmt(s.cacheReadTokens)} / Output ${fmt(s.outputTokens)}`,
+        `${s.title}\n${s.turnCount} turns · ${s.plannerSteps} steps${s.subagentCount ? ` · +${s.subagentCount} subagents` : ''}\nCache ${cachePct}%${s.reloadCount ? ` · ${s.reloadCount} reload${s.reloadCount === 1 ? '' : 's'} (+${fmt(s.wastedEffectiveTokens)})` : ''} · Raw total ${fmt(s.totalTokens)}\nInput ${fmt(s.inputTokens)} / Cache ${fmt(s.cacheReadTokens)} / Output ${fmt(s.outputTokens)}`,
       clickExpandTip: ' (Click for per-turn breakdown)',
       clickJumpTip: ' (Click to switch session)',
     },
@@ -137,6 +182,7 @@
     metricMode: 'effective', // 'effective' | 'raw'
     infoOpen: false,
     secOpen: false,
+    cacheOpen: false,
     expandedConvId: null,
     etag: '',
     snap: null,
@@ -188,6 +234,30 @@
     if (d > 0) return h > 0 ? `${d}d ${h}h` : `${d}d`;
     if (h > 0) return m > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${h}h`;
     return `${m}m`;
+  }
+
+  function shortModelTag(modelStr) {
+    const m = String(modelStr || '').toLowerCase();
+    if (!m) return '?';
+    if (m.includes('carbon')) return 'Carbon';
+    if (m.includes('neon')) return 'Neon';
+    if (m.includes('hydrogen')) return 'Hydrogen';
+    if (m.includes('flash')) return 'Flash';
+    if (m.includes('opus')) return 'Opus';
+    if (m.includes('sonnet')) return 'Sonnet';
+    if (m.includes('gpt')) return 'GPT';
+    return m.split(/[-_/]/).slice(0, 2).join('-');
+  }
+
+  function formatReloadCauseTag(ev, dict) {
+    const dur = ev.gapSec !== null && ev.gapSec !== undefined ? fmtCompactDuration(ev.gapSec) : '?';
+    if (ev.reason === 'model_switch') {
+      return dict.evModelTag(shortModelTag(ev.prevModel), shortModelTag(ev.model));
+    }
+    if (ev.reason === 'idle_ttl') {
+      return dict.evIdleTag(dur);
+    }
+    return dict.evDropTag(dur);
   }
 
   function colorTierForBucket(b) {
@@ -486,6 +556,99 @@
     }
   }
 
+  function renderCacheHealthZone() {
+    const snap = state.snap;
+    const dict = t();
+    const cacheEl = $('cache-health-zone');
+    if (!snap || !cacheEl) return;
+
+    const ch = snap.cacheHealth;
+    const totalCtx = (ch?.inputTokens || 0) + (ch?.cacheReadTokens || 0);
+    if (!ch || totalCtx <= 0) {
+      cacheEl.classList.add('hidden');
+      return;
+    }
+
+    cacheEl.classList.remove('hidden');
+    const hitPct = Math.round((ch.hitRatio || 0) * 100);
+    const hitTier = hitPct >= 75 ? 'ok' : hitPct >= 45 ? 'warn' : 'danger';
+    const labelText = ch.scope === '5h' ? dict.cacheLabel5h : dict.cacheLabelRecent;
+    const hasReloads = ch.reloadCount > 0;
+    const rightText = hasReloads
+      ? dict.cacheReloadStat(ch.reloadCount, fmtTokens(ch.wastedEffectiveTokens))
+      : dict.cacheZeroReloads(fmtTokens(ch.savedEffectiveTokens));
+
+    const hitWidth = Math.max(2, Math.min(98, hitPct));
+    const missWidth = Math.max(2, 100 - hitWidth);
+
+    const byR = ch.byReason || {};
+    const reasonChips = [
+      byR.idle_ttl > 0 ? `<span class="s-chip warn">${esc(dict.reasonIdleChip(byR.idle_ttl))}</span>` : '',
+      byR.model_switch > 0 ? `<span class="s-chip">${esc(dict.reasonModelChip(byR.model_switch))}</span>` : '',
+      byR.early_drop > 0 ? `<span class="s-chip warn">${esc(dict.reasonDropChip(byR.early_drop))}</span>` : '',
+    ]
+      .filter(Boolean)
+      .join('');
+
+    const events = Array.isArray(ch.events) ? ch.events.slice(0, 5) : [];
+    const eventsHtml = events
+      .map((ev) => {
+        const dur = ev.gapSec !== null && ev.gapSec !== undefined ? fmtCompactDuration(ev.gapSec) : '?';
+        const causeTag = formatReloadCauseTag(ev, dict);
+        const tip = dict.evHoverTip(ev, fmtTokens, dur);
+        const namePrefix = ch.sessionCount > 1 ? `${ev.sessionTitle} · ` : '';
+        return `
+          <div class="cache-ev-row" title="${esc(tip)}">
+            <span class="cache-ev-name">#${ev.turnIndex} ${esc(namePrefix + ev.prompt)}</span>
+            <span class="cache-ev-cause ${ev.reason !== 'model_switch' ? 'warn' : ''}">${esc(causeTag)}</span>
+            <span class="cache-ev-loss">+${esc(fmtTokens(ev.wastedEffectiveTokens))}</span>
+          </div>
+        `;
+      })
+      .join('');
+
+    const tipHtml =
+      byR.idle_ttl > 0
+        ? `<div class="cache-tip-line">${esc(dict.cacheTipIdle)}</div>`
+        : byR.early_drop > 0
+        ? `<div class="cache-tip-line">${esc(dict.cacheTipDrop)}</div>`
+        : '';
+
+    cacheEl.innerHTML = `
+      <div class="sec-strip">
+        <button type="button" class="sec-summary-btn" id="btn-toggle-cache" aria-expanded="${state.cacheOpen}">
+          <span class="sec-left">
+            <span class="sec-chevron ${state.cacheOpen ? 'open' : ''}">▸</span>
+            <span>${esc(labelText)}</span>
+            <span class="cache-hit-pill ${hitTier}">${esc(dict.cacheHitBadge(hitPct))}</span>
+          </span>
+          <span class="cache-right-stat ${hasReloads ? 'warn' : 'ok'}">${esc(rightText)}</span>
+        </button>
+        <div class="sec-drawer ${state.cacheOpen ? '' : 'hidden'}">
+          <div class="cache-split-bar" aria-hidden="true">
+            <div class="cache-split-hit" style="width:${hitWidth}%"></div>
+            <div class="cache-split-miss" style="width:${missWidth}%"></div>
+          </div>
+          <div class="sec-detail-sub">
+            <span>${esc(dict.cacheHitSummary(fmtTokens(ch.cacheReadTokens), hitPct, fmtTokens(ch.inputTokens)))}</span>
+            <span style="color:var(--qm-ok);font-family:var(--qm-mono)">${esc(dict.cacheSavedSummary(fmtTokens(ch.savedEffectiveTokens)))}</span>
+          </div>
+          ${reasonChips ? `<div class="cache-reason-chips">${reasonChips}</div>` : ''}
+          ${eventsHtml ? `<div class="cache-events">${eventsHtml}</div>` : ''}
+          ${tipHtml}
+        </div>
+      </div>
+    `;
+
+    const cacheBtn = $('btn-toggle-cache');
+    if (cacheBtn) {
+      cacheBtn.onclick = () => {
+        state.cacheOpen = !state.cacheOpen;
+        renderCacheHealthZone();
+      };
+    }
+  }
+
   function renderSessionsZone() {
     const snap = state.snap;
     const dict = t();
@@ -522,6 +685,10 @@
 
         const actionHint = isCurrent ? dict.clickExpandTip : canJumpHost ? dict.clickJumpTip : '';
         const hoverTip = dict.sessionHoverTip(fullSession, cachePct, fmtTokens) + actionHint;
+        const reloadBadgeHtml =
+          fullSession.reloadCount > 0
+            ? `<span class="s-reload-badge">⚡${fullSession.reloadCount}</span>`
+            : '';
 
         let detailHtml = '';
         if (isExpanded) {
@@ -531,10 +698,13 @@
             .reverse()
             .map((tr) => {
               const tv = state.metricMode === 'effective' ? tr.effectiveTokens : tr.totalTokens;
+              const spikeTagText = tr.cacheReload
+                ? formatReloadCauseTag(tr.cacheReload, dict)
+                : dict.spikeBadge;
               return `
                 <div class="turn-mini-row" title="${esc(tr.prompt)}">
                   <span class="turn-mini-text">#${tr.turnIndex} ${esc(tr.prompt)}</span>
-                  ${tr.cacheExpiredSpike ? `<span class="spike-tag">${esc(dict.spikeBadge)}</span>` : ''}
+                  ${tr.cacheExpiredSpike ? `<span class="spike-tag">${esc(spikeTagText)}</span>` : ''}
                   <span class="turn-mini-val">${esc(fmtTokens(tv))}</span>
                 </div>
               `;
@@ -560,6 +730,7 @@
             <div class="s-row" title="${esc(hoverTip)}">
               <span class="s-marker" aria-hidden="true"></span>
               <span class="s-title">${esc(fullSession.title)}</span>
+              ${reloadBadgeHtml}
               <div class="s-bar">
                 <div class="s-bar-fill" style="width:${barPct}%"></div>
               </div>
@@ -592,6 +763,7 @@
     renderChrome();
     renderHeaderStatus();
     renderQuotaZones();
+    renderCacheHealthZone();
     renderSessionsZone();
   }
 
@@ -614,7 +786,8 @@
       const conv = encodeURIComponent(currentConversationId());
       const etag = forceRefresh ? '' : encodeURIComponent(state.etag);
       const refreshParam = forceRefresh ? '&refresh=1' : '';
-      const data = await fetchApi(`/api/status?conversationId=${conv}&etag=${etag}${refreshParam}`);
+      const mockParam = params.get('mock') === '1' ? `&mock=1&mode=${encodeURIComponent(params.get('mode') || 'healthy')}` : '';
+      const data = await fetchApi(`/api/status?conversationId=${conv}&etag=${etag}${refreshParam}${mockParam}`);
       if (data.unchanged) {
         renderHeaderStatus();
         return;

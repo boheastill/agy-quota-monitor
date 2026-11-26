@@ -18,6 +18,7 @@ import {
   parseUsagePayload,
   QuotaCollector,
 } from '../sidecars/quota_board/collector.mjs';
+import { createMockSnapshot } from '../sidecars/quota_board/mock.mjs';
 
 test('computeEffectiveTokens uses deterministic 1x / 0.1x / 4x weights', () => {
   assert.equal(computeEffectiveTokens(10_000, 50_000, 2_000), 23_000);
@@ -87,6 +88,12 @@ test('parseTranscriptJsonl aggregates turns, flags cache-expiry spikes, and extr
   assert.equal(res.turns.length, 2);
   assert.equal(res.turns[0].cacheExpiredSpike, false);
   assert.equal(res.turns[1].cacheExpiredSpike, true);
+  assert.equal(res.turns[1].cacheReload.reason, 'idle_ttl');
+  assert.equal(res.turns[1].cacheReload.gapSec, 7195);
+  assert.equal(res.turns[1].cacheReload.reloadedTokens, 50_000);
+  assert.equal(res.turns[1].cacheReload.wastedEffectiveTokens, 45_000);
+  assert.equal(res.reloadCount, 1);
+  assert.equal(res.savedEffectiveTokens, Math.round(101_000 * 0.9));
   assert.deepEqual(res.childSubagentIds, [childId]);
   assert.equal(res.inputTokens, 72_000);
   assert.equal(res.cacheReadTokens, 101_000);
@@ -230,13 +237,57 @@ test('QuotaCollector rolls up child subagents into parent session without double
   }
 });
 
+test('parseTranscriptJsonl classifies model_switch and early_drop cache reloads accurately', () => {
+  const lines = [
+    JSON.stringify({ type: 'USER_INPUT', created_at: '2026-11-26T10:00:00Z', content: 'Turn 1' }),
+    JSON.stringify({
+      type: 'PLANNER_RESPONSE',
+      created_at: '2026-11-26T10:00:10Z',
+      model: 'gemini-4-neon-high',
+      input_tokens: 15_000,
+      cache_read_tokens: 85_000,
+      output_tokens: 2_000,
+    }),
+    // Turn 2: 60s later, switched to Carbon -> model_switch
+    JSON.stringify({ type: 'USER_INPUT', created_at: '2026-11-26T10:01:10Z', content: 'Turn 2 switch model' }),
+    JSON.stringify({
+      type: 'PLANNER_RESPONSE',
+      created_at: '2026-11-26T10:01:20Z',
+      model: 'gemini-4-carbon-high',
+      input_tokens: 102_000,
+      cache_read_tokens: 0,
+      output_tokens: 3_000,
+    }),
+    // Turn 3: 45s later, same model Carbon, yet 95k reloaded with only 8k cached -> early_drop
+    JSON.stringify({ type: 'USER_INPUT', created_at: '2026-11-26T10:02:05Z', content: 'Turn 3 backend drop' }),
+    JSON.stringify({
+      type: 'PLANNER_RESPONSE',
+      created_at: '2026-11-26T10:02:15Z',
+      model: 'gemini-4-carbon-high',
+      input_tokens: 95_000,
+      cache_read_tokens: 8_000,
+      output_tokens: 2_000,
+    }),
+  ].join('\n');
+
+  const parsed = parseTranscriptJsonl(lines);
+  assert.equal(parsed.reloadCount, 2);
+  assert.equal(parsed.turns[1].cacheReload.reason, 'model_switch');
+  assert.equal(parsed.turns[2].cacheReload.reason, 'early_drop');
+  assert.equal(parsed.turns[2].cacheReload.gapSec, 45);
+
+  const mockBurst = createMockSnapshot({ mode: 'burst' });
+  assert.ok(mockBurst.cacheHealth.reloadCount >= 2);
+  assert.ok(mockBurst.cacheHealth.wastedEffectiveTokens > 100_000);
+});
+
 test('index.html and app.js static DOM IDs stay 100% synchronized', () => {
   const boardDir = join(__dirname, '..', 'sidecars', 'quota_board');
   const html = readFileSync(join(boardDir, 'index.html'), 'utf-8');
   const js = readFileSync(join(boardDir, 'app.js'), 'utf-8');
 
   const htmlIds = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
-  const dynamicIds = new Set(['btn-copy-cmd', 'btn-toggle-sec', 'cli-cmd']);
+  const dynamicIds = new Set(['btn-copy-cmd', 'btn-toggle-sec', 'btn-toggle-cache', 'cli-cmd']);
   const referencedIds = new Set([...js.matchAll(/\$\('([^']+)'\)/g)].map((m) => m[1]));
 
   for (const id of referencedIds) {
