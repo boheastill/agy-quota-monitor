@@ -105,3 +105,7 @@ node scripts/dev-server.mjs --port 4790
 ## 开源协议
 
 [MIT](./LICENSE)
+
+---
+
+*作者：[Bohea](https://boheastill.com/zh/?r=gh-agy-quota)*
