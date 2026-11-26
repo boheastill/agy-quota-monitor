@@ -1325,7 +1325,111 @@ export class QuotaCollector {
     }
     leaderboard.sort((a, b) => b.effectiveTokens - a.effectiveTokens);
 
-    // Aggregate Prompt Cache Health over the active 5h window (fallback: recent sessions)
+    // Build Quota Audit across all recent scanned sessions:
+    // Answers: Where could prompt cache have worked but didn't? Why? How much % of total spend? Which sessions? What fixes it? + Collapsible Evidence.
+    const auditBuckets = new Map(); // reason -> { id, count, wastedEffectiveTokens, reloadedTokens, sessionMap, modelCounts, events }
+    let auditTotalEff = 0;
+    let auditTotalSaved = 0;
+    let auditTotalWasted = 0;
+    let auditTotalTurns = 0;
+    let auditTotalInput = 0;
+    let auditTotalCache = 0;
+
+    for (const s of leaderboard) {
+      auditTotalEff += s.effectiveTokens;
+      auditTotalSaved += s.savedEffectiveTokens || 0;
+      auditTotalTurns += s.turnCount || 0;
+      auditTotalInput += s.inputTokens || 0;
+      auditTotalCache += s.cacheReadTokens || 0;
+
+      const evs = reloadsByConv.get(s.conversationId) || [];
+      for (const ev of evs) {
+        auditTotalWasted += ev.wastedEffectiveTokens;
+        let bucket = auditBuckets.get(ev.reason);
+        if (!bucket) {
+          bucket = {
+            id: ev.reason,
+            count: 0,
+            wastedEffectiveTokens: 0,
+            reloadedTokens: 0,
+            sessionMap: new Map(),
+            modelCounts: new Map(),
+            events: [],
+          };
+          auditBuckets.set(ev.reason, bucket);
+        }
+        bucket.count += 1;
+        bucket.wastedEffectiveTokens += ev.wastedEffectiveTokens;
+        bucket.reloadedTokens += ev.reloadedTokens || 0;
+
+        const mKey = ev.model || ev.prevModel || '';
+        if (mKey) bucket.modelCounts.set(mKey, (bucket.modelCounts.get(mKey) || 0) + 1);
+
+        const prevSess = bucket.sessionMap.get(s.conversationId) || {
+          conversationId: s.conversationId,
+          title: s.title,
+          count: 0,
+          wastedEffectiveTokens: 0,
+        };
+        prevSess.count += 1;
+        prevSess.wastedEffectiveTokens += ev.wastedEffectiveTokens;
+        bucket.sessionMap.set(s.conversationId, prevSess);
+
+        bucket.events.push({
+          ...ev,
+          isCurrentSession: Boolean(activeConvId && s.conversationId === activeConvId),
+        });
+      }
+    }
+
+    const auditFindings = [...auditBuckets.values()]
+      .map((b) => {
+        const topSessions = [...b.sessionMap.values()]
+          .sort((a, b2) => b2.wastedEffectiveTokens - a.wastedEffectiveTokens)
+          .slice(0, 3);
+        const topModels = [...b.modelCounts.entries()]
+          .sort((a, b2) => b2[1] - a[1])
+          .map(([model, count]) => ({ model, count }));
+        const evidence = b.events
+          .slice()
+          .sort((a, b2) => b2.wastedEffectiveTokens - a.wastedEffectiveTokens)
+          .slice(0, 10);
+
+        return {
+          id: b.id,
+          count: b.count,
+          wastedEffectiveTokens: b.wastedEffectiveTokens,
+          reloadedTokens: b.reloadedTokens,
+          percentOfTotalSpend:
+            auditTotalEff > 0
+              ? Number(((b.wastedEffectiveTokens / auditTotalEff) * 100).toFixed(1))
+              : 0,
+          percentOfWaste:
+            auditTotalWasted > 0
+              ? Number(((b.wastedEffectiveTokens / auditTotalWasted) * 100).toFixed(1))
+              : 0,
+          dominantModel: topModels[0]?.model || null,
+          topSessions,
+          evidence,
+        };
+      })
+      .sort((a, b) => b.wastedEffectiveTokens - a.wastedEffectiveTokens);
+
+    const quotaAudit = {
+      sessionCount: leaderboard.length,
+      turnCount: auditTotalTurns,
+      totalEffectiveTokens: auditTotalEff,
+      totalSavedEffectiveTokens: auditTotalSaved,
+      totalWastedEffectiveTokens: auditTotalWasted,
+      wastedPercentOfTotal:
+        auditTotalEff > 0
+          ? Number(((auditTotalWasted / auditTotalEff) * 100).toFixed(1))
+          : 0,
+      overallCacheHitRatio: computeCacheHitRatio(auditTotalInput, auditTotalCache),
+      findings: auditFindings,
+    };
+
+    // Keep legacy cacheHealth summary scoped to active 5h window for backward compatibility
     const recent5h = leaderboard.filter((s) => s.updatedAt && nowMs - s.updatedAt <= 5 * HOUR_MS);
     const scopeSessions =
       recent5h.length > 0
@@ -1398,6 +1502,7 @@ export class QuotaCollector {
       activeConvId,
       newestStepMs,
       leaderboard.length,
+      auditTotalWasted,
       currentSession ? `${currentSession.effectiveTokens}:${currentSession.reloadCount}:${currentSession.title}` : 'none',
       resolvedTitlesSig,
     ].join('|');
@@ -1410,6 +1515,7 @@ export class QuotaCollector {
         ...this.quotaState,
         buckets: enrichedBuckets,
       },
+      quotaAudit,
       cacheHealth,
       activeConversationId: activeConvId || null,
       currentSession,

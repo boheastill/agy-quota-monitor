@@ -276,9 +276,10 @@ test('parseTranscriptJsonl classifies model_switch and early_drop cache reloads 
   assert.equal(parsed.turns[2].cacheReload.reason, 'early_drop');
   assert.equal(parsed.turns[2].cacheReload.gapSec, 45);
 
-  const mockBurst = createMockSnapshot({ mode: 'burst' });
-  assert.ok(mockBurst.cacheHealth.reloadCount >= 2);
-  assert.ok(mockBurst.cacheHealth.wastedEffectiveTokens > 100_000);
+  const mockAudit = createMockSnapshot({ mode: 'audit' });
+  assert.ok(mockAudit.quotaAudit.findings.length >= 2);
+  assert.ok(mockAudit.quotaAudit.wastedPercentOfTotal > 10);
+  assert.ok(mockAudit.quotaAudit.findings.some((f) => f.evidence.length > 0 && f.topSessions.length > 0));
 });
 
 test('index.html and app.js static DOM IDs stay 100% synchronized', () => {
@@ -287,7 +288,7 @@ test('index.html and app.js static DOM IDs stay 100% synchronized', () => {
   const js = readFileSync(join(boardDir, 'app.js'), 'utf-8');
 
   const htmlIds = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
-  const dynamicIds = new Set(['btn-copy-cmd', 'btn-toggle-sec', 'btn-toggle-cache', 'cli-cmd']);
+  const dynamicIds = new Set(['btn-copy-cmd', 'btn-toggle-sec', 'cli-cmd']);
   const referencedIds = new Set([...js.matchAll(/\$\('([^']+)'\)/g)].map((m) => m[1]));
 
   for (const id of referencedIds) {

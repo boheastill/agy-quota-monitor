@@ -59,7 +59,7 @@ const server = createServer((req, res) => {
     const etag = url.searchParams.get('etag') || '';
     const forceRefresh = url.searchParams.get('refresh') === '1';
     const useMock = FORCE_MOCK || url.searchParams.get('mock') === '1';
-    const mockMode = url.searchParams.get('mode') || 'healthy';
+    const mockMode = url.searchParams.get('mode') || 'audit';
     const snap = useMock
       ? createMockSnapshot({ mode: mockMode })
       : collector.getSnapshot({ conversationId: conv, forceRefresh });

@@ -2,22 +2,23 @@
 
 **[简体中文文档](./README.zh-CN.md)** | **English**
 
-Stop clicking into **Settings → Models** just to check how much quota you have left.
-`agy-quota-monitor` adds a clean, live **Quota** side panel right next to your chat in **Google Antigravity 2.0** (`+` menu → **Quota**) so you can see at a glance:
+> **Honest positioning:** Antigravity's built-in model picker already shows your basic remaining quota %. `agy-quota-monitor` focuses on **Quota Waste Auditing** — finding where you paid full price when prompt cache *could* have saved 90%, why it missed, how much `%` extra it cost, which sessions leaked it, and what change fixes it.
 
-![Antigravity Quota Monitor Desktop View](./assets/preview-desktop.png)
+![Antigravity Quota Audit Desktop View](./assets/preview-desktop.png)
 
 <details>
-<summary>View Light &amp; Dark Mode + Burst Warning / Expanded Turn Breakdown</summary>
+<summary>View Audit Mode vs Clean Cache Mode (Light &amp; Dark Themes)</summary>
 
 ![Light and Dark Mode Showcase](./assets/preview-themes.png)
 
 </details>
 
-1. **Dual Radial Gauges (`Gemini · 5h` & `7d`)** — Instant visual readout with a **Time-Pace Dot** on the 7d ring (arc ahead of dot = ahead of linear pace) and **EWMA half-life burn-rate forecasts** (`Safe to reset`, `Est. ~30% spare`, or `⚡ ~51m left`).
-2. **Prompt Cache Health & Invalidation Forensics (`Cache · 5h`)** — Compact 1-line strip tracking your live cache hit rate, load saved, and **exact cache-reload spikes** separated by root cause: **`⏸ Idle >1h`** (empirically verified ~60m hard TTL expired after a break), **`⇄ Model switch`**, or **`⚡ <1h drop`** (backend capacity eviction / prompt prefix change), plus exact extra load wasted.
-3. **Zero-Scroll Minimalist Layout** — Secondary pools (`Claude / GPT`) and cache diagnostics stay tucked into sleek 1-line strips until clicked; zero-balance `AI Credits` auto-hide so everything fits on one screen.
-4. **Which conversation is actually eating your quota** — Single-line session micro-bars with sidebar short titles, reload badges (`⚡1`), hover breakdown tooltips, and click-to-expand per-turn history.
+1. **Quota Waste Audit (`%` extra spent on missed cache)** — Scans your local `transcript.jsonl` logs to quantify avoidable full-price cache reloads across three concrete behaviors:
+   - **60m+ Idle Resumes** — Antigravity expires warm prompt cache after 60 minutes idle (`0%` hit past 1h). Shows exact extra spend & suggests starting fresh / `/compact`.
+   - **Mid-Thread Model Switches** — Switching models (e.g. `Neon ↔ Carbon`) mid-thread wipes the KV cache and forces a cold reload.
+   - **Sub-60m Cache Drops** — Flags which model/session is unexpectedly dropping warm cache within the hour.
+2. **Collapsible Per-Turn Evidence** — Every finding stays ultra-clean in plain language, with a 1-click **`▸ Evidence`** row listing the exact session, turn `#`, minute gap, and extra load paid so every number is verifiable.
+3. **Slim Quota Strip + Top Sessions** — Keeps 5h / 7d remaining %, weekly pace marker, collapsible `Claude / GPT`, and session load ranking right beside your chat (`+` → **Quota Audit**).
 
 ---
 

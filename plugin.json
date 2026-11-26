@@ -1,8 +1,8 @@
 {
   "name": "agy-quota-monitor",
   "displayName": "Quota Monitor",
-  "version": "2.1.0",
-  "description": "Real-time model quota gauges (5h & weekly pools, EWMA burn forecast), prompt cache invalidation diagnostics, and weighted per-session workload tracker in the auxiliary side pane.",
+  "version": "3.0.0",
+  "description": "Quota waste auditor for Google Antigravity: finds where prompt cache should have saved 90% but didn't, why it happened, which sessions leaked quota, and verifiable turn-by-turn evidence.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
     "Open the Quota side panel so I can check my 5h and weekly quota",

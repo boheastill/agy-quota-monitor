@@ -4,17 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="frame-src 'none'; child-src 'none'; object-src 'none'; base-uri 'none'">
-  <title>Quota</title>
+  <title>Quota Audit</title>
   <script src="/preload.js"></script>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <div id="app" class="app">
-    <!-- Ultra-Minimal Header (34px) -->
+    <!-- Ultra-Minimal Header (24px) -->
     <header class="header">
       <div class="header-left">
         <span class="live-dot" id="live-dot" aria-hidden="true"></span>
-        <span class="app-title" id="ui-title">Quota</span>
+        <span class="app-title" id="ui-title">Quota Audit</span>
         <span class="header-sep" aria-hidden="true">·</span>
         <span class="header-sub" id="ui-subtitle">…</span>
       </div>
@@ -31,30 +31,27 @@
       </div>
     </header>
 
-    <!-- Collapsible Help / Formula Popover -->
+    <!-- Collapsible Help / Audit Method Popover -->
     <section id="info-drawer" class="info-drawer hidden" role="region">
       <div class="info-block">
-        <div class="info-title" id="ui-info-pace-title">圆环圆点与续航预测</div>
-        <p class="info-text" id="ui-info-pace-desc"></p>
+        <div class="info-title" id="ui-info-audit-title">什么是「本来能用缓存却没用到」？</div>
+        <p class="info-text" id="ui-info-audit-desc"></p>
       </div>
       <div class="info-block">
-        <div class="info-title" id="ui-info-load-title">会话折算消耗</div>
+        <div class="info-title" id="ui-info-load-title">折算消耗口径</div>
         <code class="info-code" id="ui-info-load-expr"></code>
         <p class="info-text" id="ui-info-load-desc"></p>
       </div>
     </section>
 
     <main class="main">
-      <!-- Zone 1: Primary Gemini Dual Radial Gauges -->
-      <section id="primary-quota-zone" aria-label="Primary Quota"></section>
+      <!-- Zone 1: Slim Global Quota Strip (5h / 7d + Collapsible Secondary Pools) -->
+      <section id="quota-strip-zone" aria-label="Quota Summary"></section>
 
-      <!-- Zone 2: Collapsible Secondary Pools (Claude / GPT & Credits > 0) -->
-      <section id="secondary-quota-zone" class="hidden" aria-label="Secondary Quota"></section>
+      <!-- Zone 2: Hero Quota Waste Audit (Why, How much %, Which session, How to fix, Collapsible Evidence) -->
+      <section id="audit-zone" aria-label="Quota Waste Audit"></section>
 
-      <!-- Zone 2.5: Collapsible Prompt Cache Health & Reload Diagnostics -->
-      <section id="cache-health-zone" class="hidden" aria-label="Prompt Cache Health"></section>
-
-      <!-- Zone 3: Single-Screen Compact Session Micro-Bars -->
+      <!-- Zone 3: Compact Sessions Breakdown (with Missed Cache Share) -->
       <section class="sessions-zone" aria-labelledby="ui-sessions-heading">
         <div class="zone-bar">
           <span class="zone-label" id="ui-sessions-heading">会话消耗</span>

@@ -1,119 +1,122 @@
 /**
- * Antigravity Quota Monitor v2.1 — Minimalist Single-Screen Instrument Cluster.
+ * Antigravity Quota Monitor v3.0 — Low-Cognitive-Load Quota Audit UI.
  *
- * Features:
- * - Dual SVG radial gauges for Gemini 5h & 7d pools (with 7d Time-Pace marker dot)
- * - EWMA half-life burn-rate & runout forecast
- * - Collapsible 1-line strip for secondary pools (Claude/GPT) & non-zero AI Credits
- * - Collapsible 1-line Prompt Cache Health & Invalidation Diagnostic strip (Idle TTL vs Model Switch vs Early Drop)
- * - Unified single-screen session micro-bars with hover tooltips & click-to-expand turn drawer
+ * Designed to answer in plain language:
+ *   "Where could prompt cache have saved 90% of my quota, why did it miss,
+ *    how much extra % did I pay, which sessions caused it, and what change fixes it?"
+ * With verifiable per-turn Evidence folded right underneath each finding.
  */
 (() => {
   const POLL_INTERVAL_MS = 2500;
   const COUNTDOWN_TICK_MS = 1000;
-  const MAX_VISIBLE_SESSIONS = 6;
-  const RING_RADIUS = 26;
-  const RING_CIRC = 2 * Math.PI * RING_RADIUS; // 163.3628
+  const MAX_VISIBLE_SESSIONS = 5;
 
   const $ = (id) => document.getElementById(id);
   const params = new URLSearchParams(location.search);
 
   const I18N = {
     zh: {
-      title: 'Quota',
+      title: 'Quota Audit',
       toggleLang: 'EN',
-      infoPaceTitle: '圆环刻度点与续航预测（EWMA 半衰期算法）',
-      infoPaceDesc:
-        '• 7d 圆环上的小圆点代表「本周剩余时间比例」：色环包住圆点说明额度比时间充裕，退到圆点后说明超速。\n• 续航预测采用指数衰减加权（5h 半衰期 30 分钟，7d 半衰期 12 小时融合周期基线）：越近的操作权重越高，兼顾灵敏度与稳定性。',
-      infoLoadTitle: '会话折算消耗与缓存诊断口径',
+      infoAuditTitle: '什么是「本来能用缓存却没用到」？',
+      infoAuditDesc:
+        '续聊同一条长对话时，旧历史如果命中缓存只需要 0.1 倍额度；一旦缓存失效，整段历史会被按 1 倍全价重算——这一进一出你多付了 9 倍差价。面板自动扫描本地历史，把多花掉的额度按真实原因算清。',
+      infoLoadTitle: '折算消耗口径',
       infoLoadExpr: '折算消耗 = 新输入 × 1 + 缓存读取 × 0.1 + 思考输出 × 4',
       infoLoadDesc:
-        '命中缓存的旧上下文约打 1 折；若因停顿超时（≥1h 硬 TTL）、切换模型或短间隔内服务端容量驱逐导致缓存失效，原本按 0.1x 读取的历史会被按 1.0x 全价重算（单轮相差 10 倍）。',
-      sessionsHeading: '会话消耗',
+        '本插件不替代底部模型下拉框的剩余余额，只专注审计哪些习惯或模型路由白花了额度。点开任意一条「证据」，都能核对到具体哪条会话、哪一轮、间隔几分钟。',
+      sessionsHeading: '主要会话消耗',
       modeEffective: '折算消耗 ⇄',
       modeRaw: '原始总计 ⇄',
       justNow: '刚刚',
       ago: (t) => `${t}前`,
       syncing: '同步中…',
       staleTag: '缓存',
-      initQuota: '正在首次读取云端额度（约 10–15 秒）…',
-      localOnly: '本地已就绪',
-      cliMissingTitle: '未装 agy CLI（装后即可显示顶部圆环）',
+      initQuota: '正在同步额度…',
+      localOnly: '本地审计就绪',
+      cliMissingTitle: '装一次官方 agy CLI 即可同步顶部 5h / 周额度',
       authNeededTitle: '请在终端运行一次 agy 完成登录',
       errorTitle: '暂未读到云端额度',
       copy: '复制',
       copied: '已复制命令',
       gemini5h: 'Gemini · 5h',
-      gemini7d: 'Gemini · 本周',
+      gemini7d: 'Gemini · 7d',
       otherGroup: 'Claude / GPT',
       creditsShort: 'Credits',
-      cacheLabel5h: '缓存 · 5h',
-      cacheLabelRecent: '缓存健康',
-      cacheHitBadge: (pct) => `${pct}% 命中`,
-      cacheZeroReloads: (saved) => `✓ 0 失效 · 省 ${saved}`,
-      cacheReloadStat: (n, wasted) => `⚠ ${n} 次重算 · 多耗 +${wasted}`,
-      cacheHitSummary: (hit, pct, miss) => `命中 ${hit} (${pct}%) · 未命中 ${miss}`,
-      cacheSavedSummary: (saved) => `共省 ~${saved}`,
-      reasonIdleChip: (n) => `⏸ 停顿 >1h ×${n}`,
-      reasonModelChip: (n) => `⇄ 切换模型 ×${n}`,
-      reasonDropChip: (n) => `⚡ 1h内掉缓存 ×${n}`,
-      evIdleTag: (dur) => `⏸ 停顿 ${dur}`,
-      evModelTag: (m1, m2) => `⇄ ${m1}→${m2}`,
-      evDropTag: (dur) => `⚡ 仅隔 ${dur}`,
-      evHoverTip: (ev, fmt, dur) =>
-        `[${ev.sessionTitle}] 第 #${ev.turnIndex} 轮：${ev.prompt}\n` +
-        (ev.reason === 'idle_ttl'
-          ? `距上轮停顿 ${dur} 触发缓存过期，重算 ${fmt(ev.reloadedTokens)} 上下文（多耗 +${fmt(ev.wastedEffectiveTokens)} 折算额度）`
-          : ev.reason === 'model_switch'
-          ? `中途切换模型（${ev.prevModel || '?'} → ${ev.model || '?'}），重算 ${fmt(ev.reloadedTokens)} 上下文（多耗 +${fmt(ev.wastedEffectiveTokens)}）`
-          : `仅隔 ${dur} 即未命中缓存（可能为服务端 KV 驱逐或系统提示词变更），重算 ${fmt(ev.reloadedTokens)}（多耗 +${fmt(ev.wastedEffectiveTokens)}）`),
-      cacheTipIdle: '💡 实测缓存硬 TTL 约 60 分钟：长会话停顿超 1 小时后，建议先跑 /compact 或新开会话。',
-      cacheTipDrop: '💡 同模型 1 小时内掉缓存，通常由服务端容量路由驱逐或系统提示词变动引起。',
-      resetIn: (t) => `${t} 重置`,
+      resetIn: (t) => `${t} 后重置`,
       resetSoon: '即将重置',
-      safeReset: '✓ 撑到重置宽裕',
-      steadyPace: '✓ 节奏稳健',
-      estSpare: (p) => `预计余 ~${p}%`,
+      safeReset: '宽裕',
+      estSpare: (p) => `余 ~${p}%`,
       exhaustIn: (t) => `⚡ 约 ${t} 耗尽`,
-      exhaust7dIn: (t) => `⚠ 约 ${t} 见底`,
-      disabled: '不可用',
-      tickTip: (timePct, quotaPct) =>
-        `本周剩余时间 ${timePct}% · 剩余额度 ${quotaPct}%（圆点为时间刻度线）`,
-      rateTip: (rate) => (rate > 0 ? `近期加权消耗速率 ~${rate}%/h` : '近期几乎无消耗'),
+      // Audit hero
+      auditKicker: '额度浪费审计',
+      auditScope: (n, t) => `${n} 条会话 · ${t} 轮`,
+      auditHeroWaste: (pct) => `约 ${pct}% 的额度多花在「没用到缓存」上`,
+      auditHeroWasteSub: (turns, extra, saved) =>
+        `有 ${turns} 轮本可以按 1 折读旧历史，实际按全价重算，多付了 ~${extra} 折算消耗（另已省下 ${saved}）。`,
+      auditHeroClean: (hitPct) => `✓ 缓存利用率很好（${hitPct}% 命中，0 次大额失效）`,
+      auditHeroCleanSub: (saved) => `靠缓存命中已为你省下约 ${saved} 折算消耗，暂无需要改的习惯。`,
+      // Finding cards
+      extraBadge: (pct) => `多付 +${pct}%`,
+      whereLabel: '主要发生在：',
+      moreCount: (n) => ` 等 ${n} 条会话`,
+      evToggle: (n, extra) => `证据：查看 ${n} 轮具体记录（多花 +${extra}）`,
+      evTurnMeta: (turnIdx, gap) => `#${turnIdx}轮 · 隔${gap}`,
+      evSwitchMeta: (turnIdx, m1, m2) => `#${turnIdx}轮 · ${m1}→${m2}`,
+      // 3 concrete causes
+      causeTitle_capacity_drop: (dom) =>
+        dom ? `60 分钟内继续聊却缓存归零（集中在使用 ${dom} 时）` : '60 分钟内继续聊却缓存意外归零',
+      causeWhy_capacity_drop: (n, dom) =>
+        `同一模型隔不到 1 小时就发生 ${n} 次整段缓存丢失${dom ? `（${dom} 最明显）` : ''}，大长对话每次重算都很肉疼。`,
+      causeFix_capacity_drop: () =>
+        '→ 怎么省：大上下文改代码优先留在 Neon；如果当前模型已经掉过一次缓存，直接开新对话带摘要过去。',
+
+      causeTitle_idle_60m: () => '停顿超过 60 分钟，回来直接接着长对话继续发',
+      causeWhy_idle_60m: (n) =>
+        `缓存会在停顿满 60 分钟后过期清零；你超过 1 小时才回来接着旧对话发的 ${n} 轮里，旧历史全部按全价重算。`,
+      causeFix_idle_60m: () =>
+        '→ 怎么省：离开超 1 小时要做新任务时，点 `+ 新建对话`（或跑一次 /compact）再继续，通常直接省掉 90% 的重算。',
+
+      causeTitle_model_switch: () => '在一条已经很长的对话里中途切换了模型',
+      causeWhy_model_switch: (n) =>
+        `中途切换模型（例如 Neon 与 Carbon 互切）会让旧缓存直接作废，共有 ${n} 轮当场触发全量重算。`,
+      causeFix_model_switch: () =>
+        '→ 怎么省：同个大对话尽量从头到尾用一个模型；确实要换强模型攻坚，另起一个新对话把需求贴过去。',
+
       noSessions: '暂无会话记录',
       inpShort: '新输入',
       cacheShort: '缓存',
       outShort: '输出',
-      rawShort: '原始',
       turnsShort: (n) => `${n}轮`,
       stepsShort: (n) => `${n}步`,
       subShort: (n) => `+${n}子代理`,
       spikeBadge: '⚠缓存重算',
+      sessWasteTag: (extra) => `废-${extra}`,
       sessionHoverTip: (s, cachePct, fmt) =>
-        `${s.title}\n${s.turnCount} 轮 · ${s.plannerSteps} 步${s.subagentCount ? ` · 含 ${s.subagentCount} 个子代理` : ''}\n缓存命中 ${cachePct}%${s.reloadCount ? ` · ${s.reloadCount} 次重算 (+${fmt(s.wastedEffectiveTokens)})` : ''} · 原始总计 ${fmt(s.totalTokens)}\n新输入 ${fmt(s.inputTokens)} / 缓存 ${fmt(s.cacheReadTokens)} / 输出 ${fmt(s.outputTokens)}`,
+        `${s.title}\n${s.turnCount} 轮 · ${s.plannerSteps} 步${s.subagentCount ? ` · 含 ${s.subagentCount} 个子代理` : ''}\n缓存命中 ${cachePct}%${s.wastedEffectiveTokens ? ` · 可省浪费 ${fmt(s.wastedEffectiveTokens)}` : ''} · 原始总计 ${fmt(s.totalTokens)}`,
       clickExpandTip: '（点击展开每轮明细）',
       clickJumpTip: '（点击切换到该会话）',
     },
     en: {
-      title: 'Quota',
+      title: 'Quota Audit',
       toggleLang: '中',
-      infoPaceTitle: 'Time-Pace Dot & EWMA Burn Forecast',
-      infoPaceDesc:
-        '• The dot on the 7d ring marks remaining week time: arc ahead of dot = ahead of pace; behind dot = burning fast.\n• Burn-rate uses exponentially weighted decay (30m half-life for 5h, 12h half-life + cycle baseline for 7d) for responsive, non-jumpy estimates.',
-      infoLoadTitle: 'Estimated Load & Cache Diagnostics',
+      infoAuditTitle: 'What "missed cache you could have used" means',
+      infoAuditDesc:
+        'In an ongoing chat, reusing old context via warm prompt cache costs 0.1×. When cache misses, that same history is re-processed at 1.0× full price — a 10× jump on that turn. This panel audits local logs to show why it happened and how much extra you paid.',
+      infoLoadTitle: 'Weighted Load Formula',
       infoLoadExpr: 'Est. Load = Input × 1 + Cache × 0.1 + Output × 4',
       infoLoadDesc:
-        'Warm cache reads cost ~0.1x vs 1.0x uncached input. When cache misses due to idle TTL (≥60m), model switches, or sub-hour backend KV evictions, re-prefilling history costs 10× more.',
-      sessionsHeading: 'Sessions',
+        'Basic remaining % is already in Antigravity’s model picker; this tool audits avoidable waste. Open "Evidence" under any finding to verify the exact session, turn, and minute gap.',
+      sessionsHeading: 'Top Sessions',
       modeEffective: 'Est. Load ⇄',
       modeRaw: 'Raw Tokens ⇄',
       justNow: 'just now',
       ago: (t) => `${t} ago`,
       syncing: 'syncing…',
       staleTag: 'cached',
-      initQuota: 'Fetching initial cloud quota (~10–15s)…',
-      localOnly: 'local ready',
-      cliMissingTitle: 'Install agy CLI to enable top quota rings',
+      initQuota: 'Syncing quota…',
+      localOnly: 'local audit ready',
+      cliMissingTitle: 'Install official agy CLI to sync top 5h / 7d pools',
       authNeededTitle: 'Run `agy` once in terminal to sign in',
       errorTitle: 'Cloud quota unavailable',
       copy: 'Copy',
@@ -122,51 +125,58 @@
       gemini7d: 'Gemini · 7d',
       otherGroup: 'Claude / GPT',
       creditsShort: 'Credits',
-      cacheLabel5h: 'Cache · 5h',
-      cacheLabelRecent: 'Cache',
-      cacheHitBadge: (pct) => `${pct}% hit`,
-      cacheZeroReloads: (saved) => `✓ 0 reloads · ${saved} saved`,
-      cacheReloadStat: (n, wasted) => `⚠ ${n} reload${n === 1 ? '' : 's'} · +${wasted}`,
-      cacheHitSummary: (hit, pct, miss) => `Hit ${hit} (${pct}%) · Uncached ${miss}`,
-      cacheSavedSummary: (saved) => `Saved ~${saved}`,
-      reasonIdleChip: (n) => `⏸ Idle >1h ×${n}`,
-      reasonModelChip: (n) => `⇄ Model switch ×${n}`,
-      reasonDropChip: (n) => `⚡ <1h drop ×${n}`,
-      evIdleTag: (dur) => `⏸ ${dur} idle`,
-      evModelTag: (m1, m2) => `⇄ ${m1}→${m2}`,
-      evDropTag: (dur) => `⚡ ${dur} gap`,
-      evHoverTip: (ev, fmt, dur) =>
-        `[${ev.sessionTitle}] Turn #${ev.turnIndex}: ${ev.prompt}\n` +
-        (ev.reason === 'idle_ttl'
-          ? `Idle ${dur} before turn — ${fmt(ev.reloadedTokens)} context reloaded cold (+${fmt(ev.wastedEffectiveTokens)} extra load vs warm cache)`
-          : ev.reason === 'model_switch'
-          ? `Model switched (${ev.prevModel || '?'} → ${ev.model || '?'}) — ${fmt(ev.reloadedTokens)} reloaded (+${fmt(ev.wastedEffectiveTokens)} extra load)`
-          : `Cache missed after only ${dur} on same model (upstream KV eviction or prompt change) — +${fmt(ev.wastedEffectiveTokens)} extra load`),
-      cacheTipIdle: '💡 Hard cache TTL is ~60m: after >1h idle on a big thread, run /compact or start fresh to skip 10× cold reloads.',
-      cacheTipDrop: '💡 Sub-hour cache drops on the same model indicate backend capacity eviction or prompt prefix changes.',
       resetIn: (t) => `${t} left`,
       resetSoon: 'resetting',
-      safeReset: '✓ Safe to reset',
-      steadyPace: '✓ On pace',
-      estSpare: (p) => `Est. ~${p}% spare`,
+      safeReset: 'safe',
+      estSpare: (p) => `~${p}% spare`,
       exhaustIn: (t) => `⚡ ~${t} left`,
-      exhaust7dIn: (t) => `⚠ ~${t} left`,
-      disabled: 'Disabled',
-      tickTip: (timePct, quotaPct) =>
-        `Week time left ${timePct}% · Quota left ${quotaPct}% (dot marks linear time pace)`,
-      rateTip: (rate) => (rate > 0 ? `Weighted burn ~${rate}%/h` : 'Minimal recent burn'),
+      // Audit hero
+      auditKicker: 'Quota Waste Audit',
+      auditScope: (n, t) => `${n} sessions · ${t} turns`,
+      auditHeroWaste: (pct) => `~${pct}% of your spend paid for missed cache`,
+      auditHeroWasteSub: (turns, extra, saved) =>
+        `${turns} turns re-loaded old history at full price instead of 0.1× warm cache — ${extra} extra load paid (${saved} saved elsewhere).`,
+      auditHeroClean: (hitPct) => `✓ Clean cache usage (${hitPct}% hit · 0 major reloads)`,
+      auditHeroCleanSub: (saved) => `Warm cache saved ~${saved} est. load so far. Nothing obvious leaking.`,
+      // Finding cards
+      extraBadge: (pct) => `+${pct}% spend`,
+      whereLabel: 'Mostly in: ',
+      moreCount: (n) => ` +${n} more`,
+      evToggle: (n, extra) => `Evidence (${n} turns · +${extra} extra load)`,
+      evTurnMeta: (turnIdx, gap) => `#${turnIdx} · ${gap} gap`,
+      evSwitchMeta: (turnIdx, m1, m2) => `#${turnIdx} · ${m1}→${m2}`,
+      // 3 concrete causes
+      causeTitle_capacity_drop: (dom) =>
+        dom ? `Cache dropped within 60m (mostly on ${dom})` : 'Cache dropped within 60m on the same model',
+      causeWhy_capacity_drop: (n, dom) =>
+        `Same-model turns lost their warm cache ${n} time${n === 1 ? '' : 's'} before the 1h expiry${dom ? ` — concentrated when running ${dom}` : ''}.`,
+      causeFix_capacity_drop: () =>
+        '→ How to save: keep heavy long-context coding on Neon; if a thread drops cache once, start fresh with a brief summary.',
+
+      causeTitle_idle_60m: () => 'Resuming big threads after >60m idle',
+      causeWhy_idle_60m: (n) =>
+        `Antigravity drops warm cache after 60m idle. ${n === 1 ? 'This turn' : `All ${n} turns`} sent after a >1h break re-paid full price for the entire history.`,
+      causeFix_idle_60m: () =>
+        '→ How to save: when returning >1h later for a new subtask, open a fresh chat (or run /compact) instead of piling onto an old one.',
+
+      causeTitle_model_switch: () => 'Switching models mid-thread on large contexts',
+      causeWhy_model_switch: (n) =>
+        `Switching models inside the same conversation (e.g. Neon ↔ Carbon) wipes the existing KV cache, triggering ${n} full cold reload${n === 1 ? '' : 's'}.`,
+      causeFix_model_switch: () =>
+        '→ How to save: stick to one model per long thread; if you need another model, start a clean thread with just the relevant context.',
+
       noSessions: 'No sessions yet',
       inpShort: 'In',
       cacheShort: 'Cache',
       outShort: 'Out',
-      rawShort: 'Raw',
       turnsShort: (n) => `${n}t`,
       stepsShort: (n) => `${n}s`,
       subShort: (n) => `+${n} sub`,
       spikeBadge: '⚠Cache reload',
+      sessWasteTag: (extra) => `-${extra}`,
       sessionHoverTip: (s, cachePct, fmt) =>
-        `${s.title}\n${s.turnCount} turns · ${s.plannerSteps} steps${s.subagentCount ? ` · +${s.subagentCount} subagents` : ''}\nCache ${cachePct}%${s.reloadCount ? ` · ${s.reloadCount} reload${s.reloadCount === 1 ? '' : 's'} (+${fmt(s.wastedEffectiveTokens)})` : ''} · Raw total ${fmt(s.totalTokens)}\nInput ${fmt(s.inputTokens)} / Cache ${fmt(s.cacheReadTokens)} / Output ${fmt(s.outputTokens)}`,
-      clickExpandTip: ' (Click for per-turn breakdown)',
+        `${s.title}\n${s.turnCount} turns · ${s.plannerSteps} steps${s.subagentCount ? ` · +${s.subagentCount} subagents` : ''}\nCache ${cachePct}%${s.wastedEffectiveTokens ? ` · Avoidable waste ${fmt(s.wastedEffectiveTokens)}` : ''} · Raw ${fmt(s.totalTokens)}`,
+      clickExpandTip: ' (Click for turn breakdown)',
       clickJumpTip: ' (Click to switch session)',
     },
   };
@@ -182,7 +192,7 @@
     metricMode: 'effective', // 'effective' | 'raw'
     infoOpen: false,
     secOpen: false,
-    cacheOpen: false,
+    openEvidenceIds: new Set(),
     expandedConvId: null,
     etag: '',
     snap: null,
@@ -236,9 +246,9 @@
     return `${m}m`;
   }
 
-  function shortModelTag(modelStr) {
+  function shortModelName(modelStr) {
     const m = String(modelStr || '').toLowerCase();
-    if (!m) return '?';
+    if (!m) return '';
     if (m.includes('carbon')) return 'Carbon';
     if (m.includes('neon')) return 'Neon';
     if (m.includes('hydrogen')) return 'Hydrogen';
@@ -246,18 +256,7 @@
     if (m.includes('opus')) return 'Opus';
     if (m.includes('sonnet')) return 'Sonnet';
     if (m.includes('gpt')) return 'GPT';
-    return m.split(/[-_/]/).slice(0, 2).join('-');
-  }
-
-  function formatReloadCauseTag(ev, dict) {
-    const dur = ev.gapSec !== null && ev.gapSec !== undefined ? fmtCompactDuration(ev.gapSec) : '?';
-    if (ev.reason === 'model_switch') {
-      return dict.evModelTag(shortModelTag(ev.prevModel), shortModelTag(ev.model));
-    }
-    if (ev.reason === 'idle_ttl') {
-      return dict.evIdleTag(dur);
-    }
-    return dict.evDropTag(dur);
+    return modelStr;
   }
 
   function colorTierForBucket(b) {
@@ -266,24 +265,17 @@
     return 'ok';
   }
 
-  function formatPaceLine(b) {
+  function shortPaceTag(b) {
     const dict = t();
     const p = b.pace;
-    if (!p) return { text: dict.steadyPace, cls: 'steady' };
-
+    if (!p) return '';
     if (p.willExhaustBeforeReset && p.estimatedTimeLeftSec) {
-      const dur = fmtCompactDuration(p.estimatedTimeLeftSec);
-      const is7d = p.windowKind === '7d';
-      const cls = p.status === 'exhausting' || b.remainingFraction < 0.2 ? 'danger' : 'warn';
-      return { text: is7d ? dict.exhaust7dIn(dur) : dict.exhaustIn(dur), cls };
+      return dict.exhaustIn(fmtCompactDuration(p.estimatedTimeLeftSec));
     }
-
     if (p.windowKind === '7d' && p.projectedRemainingPercent !== null) {
-      const cls = p.projectedRemainingPercent >= 25 ? 'ok' : p.projectedRemainingPercent >= 10 ? 'steady' : 'warn';
-      return { text: dict.estSpare(p.projectedRemainingPercent), cls };
+      return dict.estSpare(p.projectedRemainingPercent);
     }
-
-    return { text: dict.safeReset, cls: 'ok' };
+    return dict.safeReset;
   }
 
   function shortGaugeTitle(b) {
@@ -320,8 +312,8 @@
     document.documentElement.lang = state.lang === 'zh' ? 'zh-CN' : 'en';
     $('ui-title').textContent = dict.title;
     $('btn-lang').textContent = dict.toggleLang;
-    $('ui-info-pace-title').textContent = dict.infoPaceTitle;
-    $('ui-info-pace-desc').innerHTML = esc(dict.infoPaceDesc).replace(/\n/g, '<br>');
+    $('ui-info-audit-title').textContent = dict.infoAuditTitle;
+    $('ui-info-audit-desc').textContent = dict.infoAuditDesc;
     $('ui-info-load-title').textContent = dict.infoLoadTitle;
     $('ui-info-load-expr').textContent = dict.infoLoadExpr;
     $('ui-info-load-desc').textContent = dict.infoLoadDesc;
@@ -358,72 +350,17 @@
     }
   }
 
-  function buildRadialGaugeHtml(b, nowMs) {
-    const dict = t();
-    const tier = colorTierForBucket(b);
-    const pctRound = Math.round(b.remainingPercent);
-    const dashOffset = (RING_CIRC * (1 - Math.max(0, Math.min(1, b.remainingFraction)))).toFixed(2);
-    const paceInfo = formatPaceLine(b);
-
-    let resetText = '';
-    if (b.resetAtMs) {
-      const remSec = Math.floor((b.resetAtMs - nowMs) / 1000);
-      resetText = remSec > 0 ? dict.resetIn(fmtCompactDuration(remSec)) : dict.resetSoon;
-    }
-
-    // Time-Pace Marker Dot on 7d ring
-    let tickSvg = '';
-    const timeFrac = b.pace?.timeRemainingFraction;
-    if (b.pace?.windowKind === '7d' && typeof timeFrac === 'number' && timeFrac > 0 && timeFrac < 1) {
-      const angle = timeFrac * 2 * Math.PI;
-      const cx = (32 + RING_RADIUS * Math.cos(angle)).toFixed(2);
-      const cy = (32 + RING_RADIUS * Math.sin(angle)).toFixed(2);
-      tickSvg = `<circle class="ring-tick" cx="${cx}" cy="${cy}" r="3.1" />`;
-    }
-
-    const tooltipLines = [
-      `${b.label}: ${b.remainingPercent.toFixed(2)}%`,
-      b.pace?.windowKind === '7d' && typeof timeFrac === 'number'
-        ? dict.tickTip(Math.round(timeFrac * 100), pctRound)
-        : '',
-      b.pace ? dict.rateTip(b.pace.burnRatePctPerHour) : '',
-      b.description || '',
-    ].filter(Boolean);
-
-    return `
-      <div class="gauge-card" data-reset-ms="${b.resetAtMs || ''}" title="${esc(tooltipLines.join('\n'))}">
-        <div class="ring-wrap">
-          <svg class="ring-svg" viewBox="0 0 64 64" aria-hidden="true">
-            <circle class="ring-track" cx="32" cy="32" r="${RING_RADIUS}" />
-            <circle class="ring-arc ${tier}" cx="32" cy="32" r="${RING_RADIUS}"
-                    stroke-dasharray="${RING_CIRC.toFixed(2)}"
-                    stroke-dashoffset="${dashOffset}" />
-            ${tickSvg}
-          </svg>
-          <div class="ring-center">${pctRound}%</div>
-        </div>
-        <div class="gauge-meta">
-          <div class="gauge-title">${esc(shortGaugeTitle(b))}</div>
-          <div class="gauge-reset quota-reset-label">${esc(resetText)}</div>
-          <div class="gauge-pace ${paceInfo.cls}">${esc(paceInfo.text)}</div>
-        </div>
-      </div>
-    `;
-  }
-
-  function renderQuotaZones() {
+  function renderQuotaStripZone() {
     const snap = state.snap;
     const dict = t();
-    const primaryEl = $('primary-quota-zone');
-    const secondaryEl = $('secondary-quota-zone');
-    if (!snap) return;
+    const stripEl = $('quota-strip-zone');
+    if (!snap || !stripEl) return;
 
     const q = snap.quota || {};
     const buckets = Array.isArray(q.buckets) ? q.buckets : [];
 
     if (q.status === 'initializing' && buckets.length === 0) {
-      primaryEl.innerHTML = `<div class="notice-card">${esc(dict.initQuota)}</div>`;
-      secondaryEl.classList.add('hidden');
+      stripEl.innerHTML = `<div class="notice-card">${esc(dict.initQuota)}</div>`;
       return;
     }
 
@@ -436,7 +373,7 @@
           : dict.errorTitle;
       const cmd = q.status === 'cli_missing' ? q.cliHint : q.status === 'auth_needed' ? 'agy' : '';
 
-      primaryEl.innerHTML = `
+      stripEl.innerHTML = `
         <div class="notice-card">
           <div class="notice-title">${esc(title)}</div>
           ${
@@ -449,7 +386,6 @@
           }
         </div>
       `;
-      secondaryEl.classList.add('hidden');
       const copyBtn = $('btn-copy-cmd');
       if (copyBtn) {
         copyBtn.onclick = async () => {
@@ -470,181 +406,191 @@
     const heroIds = new Set(heroList.map((b) => b.id));
     const secondaryBuckets = buckets.filter((b) => !heroIds.has(b.id));
 
-    primaryEl.innerHTML = `
-      <div class="gauge-grid ${heroList.length === 1 ? 'single' : ''}">
-        ${heroList.map((b) => buildRadialGaugeHtml(b, nowMs)).join('')}
-      </div>
-    `;
-
-    const nonZeroCredits = q.credits && typeof q.credits.balance === 'number' && q.credits.balance > 0 ? q.credits.balance : null;
-
-    if (secondaryBuckets.length === 0 && nonZeroCredits === null) {
-      secondaryEl.classList.add('hidden');
-      return;
-    }
-
-    secondaryEl.classList.remove('hidden');
-    const summaryPillsHtml = secondaryBuckets
+    const colsHtml = heroList
       .map((b) => {
         const tier = colorTierForBucket(b);
-        const colorStyle =
-          tier === 'danger' ? 'color:var(--qm-danger)' : tier === 'warn' ? 'color:var(--qm-warn)' : '';
-        return `
-          <span class="sec-pill-item">
-            <span class="sec-pill-win">${esc(b.shortWindowLabel)}</span>
-            <span style="${colorStyle}">${b.disabled ? '—' : `${Math.round(b.remainingPercent)}%`}</span>
-          </span>
-        `;
-      })
-      .join('');
-
-    const creditsPillHtml =
-      nonZeroCredits !== null
-        ? `<span class="sec-pill-item"><span class="sec-pill-win">${esc(dict.creditsShort)}</span><span>${esc(nonZeroCredits)}</span></span>`
-        : '';
-
-    const detailRowsHtml = secondaryBuckets
-      .map((b) => {
-        if (b.disabled) {
-          return `
-            <div class="sec-detail-row">
-              <div class="sec-detail-top"><span>${esc(b.label)}</span><span>${esc(dict.disabled)}</span></div>
-            </div>
-          `;
-        }
-        const tier = colorTierForBucket(b);
-        const pace = formatPaceLine(b);
+        const pctRound = Math.round(b.remainingPercent);
         const remSec = b.resetAtMs ? Math.floor((b.resetAtMs - nowMs) / 1000) : 0;
         const resetTxt = b.resetAtMs ? (remSec > 0 ? dict.resetIn(fmtCompactDuration(remSec)) : dict.resetSoon) : '';
+        const paceTag = shortPaceTag(b);
+        const timeFrac = b.pace?.windowKind === '7d' ? b.pace?.timeRemainingFraction : null;
+        const markerHtml =
+          typeof timeFrac === 'number' && timeFrac > 0 && timeFrac < 1
+            ? `<span class="pace-marker" style="left:${Math.round(timeFrac * 100)}%"></span>`
+            : '';
+
         return `
-          <div class="sec-detail-row" data-reset-ms="${b.resetAtMs || ''}">
-            <div class="sec-detail-top">
-              <span>${esc(b.label)}</span>
-              <span style="font-family:var(--qm-mono);font-weight:600">${esc(b.remainingPercent.toFixed(1))}%</span>
+          <div class="quota-pill-col" data-reset-ms="${b.resetAtMs || ''}">
+            <div class="quota-pill-head">
+              <span class="quota-pill-name">${esc(shortGaugeTitle(b))}</span>
+              <span class="quota-pill-pct ${tier}">${pctRound}%</span>
             </div>
             <div class="mini-bar-track">
               <div class="mini-bar-fill ${tier}" style="width:${Math.max(2, Math.min(100, b.remainingPercent))}%"></div>
+              ${markerHtml}
             </div>
-            <div class="sec-detail-sub">
+            <div class="quota-pill-sub">
               <span class="quota-reset-label">${esc(resetTxt)}</span>
-              <span class="gauge-pace ${pace.cls}">${esc(pace.text)}</span>
+              <span>${esc(paceTag)}</span>
             </div>
           </div>
         `;
       })
       .join('');
 
-    secondaryEl.innerHTML = `
-      <div class="sec-strip">
-        <button type="button" class="sec-summary-btn" id="btn-toggle-sec" aria-expanded="${state.secOpen}">
-          <span class="sec-left">
-            <span class="sec-chevron ${state.secOpen ? 'open' : ''}">▸</span>
-            <span>${esc(dict.otherGroup)}</span>
-          </span>
-          <span class="sec-pills">${summaryPillsHtml}${creditsPillHtml}</span>
+    const nonZeroCredits = q.credits && typeof q.credits.balance === 'number' && q.credits.balance > 0 ? q.credits.balance : null;
+    let secHtml = '';
+    if (secondaryBuckets.length > 0 || nonZeroCredits !== null) {
+      const summaryItems = secondaryBuckets
+        .map((b) => `${b.shortWindowLabel} ${b.disabled ? '—' : `${Math.round(b.remainingPercent)}%`}`)
+        .join(' · ');
+      const creditsText = nonZeroCredits !== null ? ` · ${dict.creditsShort} ${nonZeroCredits}` : '';
+      const detailsHtml = secondaryBuckets
+        .map((b) => {
+          const remSec = b.resetAtMs ? Math.floor((b.resetAtMs - nowMs) / 1000) : 0;
+          const resetTxt = b.resetAtMs ? (remSec > 0 ? dict.resetIn(fmtCompactDuration(remSec)) : dict.resetSoon) : '';
+          return `
+            <div class="sec-detail-row" data-reset-ms="${b.resetAtMs || ''}">
+              <span>${esc(b.label)}</span>
+              <span style="font-family:var(--qm-mono)">${b.disabled ? '—' : `${b.remainingPercent.toFixed(1)}%`} <span class="quota-reset-label" style="color:var(--qm-muted)">(${esc(resetTxt)})</span></span>
+            </div>
+          `;
+        })
+        .join('');
+
+      secHtml = `
+        <button type="button" class="sec-toggle-bar" id="btn-toggle-sec" aria-expanded="${state.secOpen}">
+          <span><span class="sec-chevron ${state.secOpen ? 'open' : ''}">▸</span> ${esc(dict.otherGroup)}</span>
+          <span style="font-family:var(--qm-mono)">${esc(summaryItems + creditsText)}</span>
         </button>
-        <div class="sec-drawer ${state.secOpen ? '' : 'hidden'}">${detailRowsHtml}</div>
-      </div>
-    `;
+        <div class="sec-drawer ${state.secOpen ? '' : 'hidden'}">${detailsHtml}</div>
+      `;
+    }
+
+    stripEl.innerHTML = `<div class="quota-card"><div class="quota-top-row">${colsHtml}</div>${secHtml}</div>`;
 
     const secBtn = $('btn-toggle-sec');
     if (secBtn) {
       secBtn.onclick = () => {
         state.secOpen = !state.secOpen;
-        renderQuotaZones();
+        renderQuotaStripZone();
       };
     }
   }
 
-  function renderCacheHealthZone() {
+  function normalizeAuditReasonKey(rawId) {
+    if (rawId === 'early_drop' || rawId === 'capacity_drop') return 'capacity_drop';
+    if (rawId === 'idle_ttl' || rawId === 'idle_60m') return 'idle_60m';
+    return 'model_switch';
+  }
+
+  function renderAuditZone() {
     const snap = state.snap;
     const dict = t();
-    const cacheEl = $('cache-health-zone');
-    if (!snap || !cacheEl) return;
+    const auditEl = $('audit-zone');
+    if (!snap || !auditEl) return;
 
-    const ch = snap.cacheHealth;
-    const totalCtx = (ch?.inputTokens || 0) + (ch?.cacheReadTokens || 0);
-    if (!ch || totalCtx <= 0) {
-      cacheEl.classList.add('hidden');
+    const audit = snap.quotaAudit;
+    if (!audit || audit.sessionCount === 0) {
+      auditEl.innerHTML = '';
       return;
     }
 
-    cacheEl.classList.remove('hidden');
-    const hitPct = Math.round((ch.hitRatio || 0) * 100);
-    const hitTier = hitPct >= 75 ? 'ok' : hitPct >= 45 ? 'warn' : 'danger';
-    const labelText = ch.scope === '5h' ? dict.cacheLabel5h : dict.cacheLabelRecent;
-    const hasReloads = ch.reloadCount > 0;
-    const rightText = hasReloads
-      ? dict.cacheReloadStat(ch.reloadCount, fmtTokens(ch.wastedEffectiveTokens))
-      : dict.cacheZeroReloads(fmtTokens(ch.savedEffectiveTokens));
+    const findings = Array.isArray(audit.findings) ? audit.findings : [];
+    const totalMissTurns = findings.reduce((acc, f) => acc + (f.count || 0), 0);
+    const hasWaste = audit.totalWastedEffectiveTokens > 0 && findings.length > 0;
+    const hitPct = Math.round((audit.overallCacheHitRatio || 0) * 100);
 
-    const hitWidth = Math.max(2, Math.min(98, hitPct));
-    const missWidth = Math.max(2, 100 - hitWidth);
-
-    const byR = ch.byReason || {};
-    const reasonChips = [
-      byR.idle_ttl > 0 ? `<span class="s-chip warn">${esc(dict.reasonIdleChip(byR.idle_ttl))}</span>` : '',
-      byR.model_switch > 0 ? `<span class="s-chip">${esc(dict.reasonModelChip(byR.model_switch))}</span>` : '',
-      byR.early_drop > 0 ? `<span class="s-chip warn">${esc(dict.reasonDropChip(byR.early_drop))}</span>` : '',
-    ]
-      .filter(Boolean)
-      .join('');
-
-    const events = Array.isArray(ch.events) ? ch.events.slice(0, 5) : [];
-    const eventsHtml = events
-      .map((ev) => {
-        const dur = ev.gapSec !== null && ev.gapSec !== undefined ? fmtCompactDuration(ev.gapSec) : '?';
-        const causeTag = formatReloadCauseTag(ev, dict);
-        const tip = dict.evHoverTip(ev, fmtTokens, dur);
-        const namePrefix = ch.sessionCount > 1 ? `${ev.sessionTitle} · ` : '';
-        return `
-          <div class="cache-ev-row" title="${esc(tip)}">
-            <span class="cache-ev-name">#${ev.turnIndex} ${esc(namePrefix + ev.prompt)}</span>
-            <span class="cache-ev-cause ${ev.reason !== 'model_switch' ? 'warn' : ''}">${esc(causeTag)}</span>
-            <span class="cache-ev-loss">+${esc(fmtTokens(ev.wastedEffectiveTokens))}</span>
+    const heroHtml = hasWaste
+      ? `
+        <div class="audit-hero has-waste">
+          <div class="audit-hero-top">
+            <span class="audit-hero-kicker">${esc(dict.auditKicker)}</span>
+            <span class="audit-hero-scope">${esc(dict.auditScope(audit.sessionCount, audit.turnCount))}</span>
           </div>
+          <div class="audit-hero-headline"><span class="hl-warn">${esc(dict.auditHeroWaste(audit.wastedPercentOfTotal))}</span></div>
+          <div class="audit-hero-sub">${esc(dict.auditHeroWasteSub(totalMissTurns, fmtTokens(audit.totalWastedEffectiveTokens), fmtTokens(audit.totalSavedEffectiveTokens)))}</div>
+        </div>
+      `
+      : `
+        <div class="audit-hero clean">
+          <div class="audit-hero-top">
+            <span class="audit-hero-kicker">${esc(dict.auditKicker)}</span>
+            <span class="audit-hero-scope">${esc(dict.auditScope(audit.sessionCount, audit.turnCount))}</span>
+          </div>
+          <div class="audit-hero-headline"><span class="hl-ok">${esc(dict.auditHeroClean(hitPct))}</span></div>
+          <div class="audit-hero-sub">${esc(dict.auditHeroCleanSub(fmtTokens(audit.totalSavedEffectiveTokens)))}</div>
+        </div>
+      `;
+
+    const cardsHtml = findings
+      .map((f) => {
+        const key = normalizeAuditReasonKey(f.id);
+        const domModel = shortModelName(f.dominantModel);
+        const title = dict[`causeTitle_${key}`](domModel);
+        const why = dict[`causeWhy_${key}`](f.count, domModel);
+        const fix = dict[`causeFix_${key}`](domModel);
+        const isHigh = f.percentOfTotalSpend >= 8;
+
+        const topSessNames = (f.topSessions || [])
+          .slice(0, 2)
+          .map((s) => `${s.title} (+${fmtTokens(s.wastedEffectiveTokens)})`)
+          .join(', ');
+        const extraSessCount = Math.max(0, (f.topSessions || []).length - 2);
+        const whereText = topSessNames
+          ? `${dict.whereLabel}${topSessNames}${extraSessCount > 0 ? dict.moreCount(extraSessCount) : ''}`
+          : '';
+
+        const evOpen = state.openEvidenceIds.has(f.id);
+        const evRowsHtml = (f.evidence || [])
+          .slice(0, 6)
+          .map((ev) => {
+            const gapTxt = ev.gapSec !== null && ev.gapSec !== undefined ? fmtCompactDuration(ev.gapSec) : '?';
+            const meta =
+              key === 'model_switch'
+                ? dict.evSwitchMeta(ev.turnIndex, shortModelName(ev.prevModel) || '?', shortModelName(ev.model) || '?')
+                : dict.evTurnMeta(ev.turnIndex, gapTxt);
+            return `
+              <div class="ev-row" title="${esc(ev.prompt)}">
+                <span class="ev-sess">${esc(ev.sessionTitle)}</span>
+                <span class="ev-meta">${esc(meta)}</span>
+                <span class="ev-cost">+${esc(fmtTokens(ev.wastedEffectiveTokens))}</span>
+              </div>
+            `;
+          })
+          .join('');
+
+        return `
+          <article class="finding-card" data-finding-id="${esc(f.id)}">
+            <div class="finding-body">
+              <div class="finding-head">
+                <span class="finding-title">${esc(title)}</span>
+                <span class="finding-badge ${isHigh ? 'high' : ''}">${esc(dict.extraBadge(f.percentOfTotalSpend))}</span>
+              </div>
+              <div class="finding-why">${esc(why)}</div>
+              ${whereText ? `<div class="finding-where" title="${esc(whereText)}">${esc(whereText)}</div>` : ''}
+              <div class="finding-fix">${esc(fix)}</div>
+            </div>
+            <button type="button" class="ev-toggle-btn" data-toggle-ev="${esc(f.id)}" aria-expanded="${evOpen}">
+              <span><span class="sec-chevron ${evOpen ? 'open' : ''}">▸</span> ${esc(dict.evToggle(f.count, fmtTokens(f.wastedEffectiveTokens)))}</span>
+            </button>
+            <div class="ev-drawer ${evOpen ? '' : 'hidden'}">${evRowsHtml}</div>
+          </article>
         `;
       })
       .join('');
 
-    const tipHtml =
-      byR.idle_ttl > 0
-        ? `<div class="cache-tip-line">${esc(dict.cacheTipIdle)}</div>`
-        : byR.early_drop > 0
-        ? `<div class="cache-tip-line">${esc(dict.cacheTipDrop)}</div>`
-        : '';
+    auditEl.innerHTML = `<div class="audit-wrap">${heroHtml}${cardsHtml}</div>`;
 
-    cacheEl.innerHTML = `
-      <div class="sec-strip">
-        <button type="button" class="sec-summary-btn" id="btn-toggle-cache" aria-expanded="${state.cacheOpen}">
-          <span class="sec-left">
-            <span class="sec-chevron ${state.cacheOpen ? 'open' : ''}">▸</span>
-            <span>${esc(labelText)}</span>
-            <span class="cache-hit-pill ${hitTier}">${esc(dict.cacheHitBadge(hitPct))}</span>
-          </span>
-          <span class="cache-right-stat ${hasReloads ? 'warn' : 'ok'}">${esc(rightText)}</span>
-        </button>
-        <div class="sec-drawer ${state.cacheOpen ? '' : 'hidden'}">
-          <div class="cache-split-bar" aria-hidden="true">
-            <div class="cache-split-hit" style="width:${hitWidth}%"></div>
-            <div class="cache-split-miss" style="width:${missWidth}%"></div>
-          </div>
-          <div class="sec-detail-sub">
-            <span>${esc(dict.cacheHitSummary(fmtTokens(ch.cacheReadTokens), hitPct, fmtTokens(ch.inputTokens)))}</span>
-            <span style="color:var(--qm-ok);font-family:var(--qm-mono)">${esc(dict.cacheSavedSummary(fmtTokens(ch.savedEffectiveTokens)))}</span>
-          </div>
-          ${reasonChips ? `<div class="cache-reason-chips">${reasonChips}</div>` : ''}
-          ${eventsHtml ? `<div class="cache-events">${eventsHtml}</div>` : ''}
-          ${tipHtml}
-        </div>
-      </div>
-    `;
-
-    const cacheBtn = $('btn-toggle-cache');
-    if (cacheBtn) {
-      cacheBtn.onclick = () => {
-        state.cacheOpen = !state.cacheOpen;
-        renderCacheHealthZone();
+    for (const btn of auditEl.querySelectorAll('[data-toggle-ev]')) {
+      const fid = btn.getAttribute('data-toggle-ev');
+      btn.onclick = () => {
+        if (state.openEvidenceIds.has(fid)) {
+          state.openEvidenceIds.delete(fid);
+        } else {
+          state.openEvidenceIds.add(fid);
+        }
+        renderAuditZone();
       };
     }
   }
@@ -659,7 +605,6 @@
     const all = Array.isArray(snap.sessions) ? snap.sessions.slice() : [];
     all.sort((a, b) => metricOf(b) - metricOf(a));
 
-    // Ensure active conversation is always visible in the compact top-6 single-screen list
     const activeId = snap.activeConversationId;
     let visible = all.slice(0, MAX_VISIBLE_SESSIONS);
     if (activeId && snap.currentSession && !visible.some((s) => s.conversationId === activeId)) {
@@ -685,9 +630,9 @@
 
         const actionHint = isCurrent ? dict.clickExpandTip : canJumpHost ? dict.clickJumpTip : '';
         const hoverTip = dict.sessionHoverTip(fullSession, cachePct, fmtTokens) + actionHint;
-        const reloadBadgeHtml =
-          fullSession.reloadCount > 0
-            ? `<span class="s-reload-badge">⚡${fullSession.reloadCount}</span>`
+        const wasteTagHtml =
+          fullSession.wastedEffectiveTokens > 0
+            ? `<span class="s-waste-tag">${esc(dict.sessWasteTag(fmtTokens(fullSession.wastedEffectiveTokens)))}</span>`
             : '';
 
         let detailHtml = '';
@@ -698,13 +643,10 @@
             .reverse()
             .map((tr) => {
               const tv = state.metricMode === 'effective' ? tr.effectiveTokens : tr.totalTokens;
-              const spikeTagText = tr.cacheReload
-                ? formatReloadCauseTag(tr.cacheReload, dict)
-                : dict.spikeBadge;
               return `
                 <div class="turn-mini-row" title="${esc(tr.prompt)}">
                   <span class="turn-mini-text">#${tr.turnIndex} ${esc(tr.prompt)}</span>
-                  ${tr.cacheExpiredSpike ? `<span class="spike-tag">${esc(spikeTagText)}</span>` : ''}
+                  ${tr.cacheExpiredSpike ? `<span class="spike-tag">${esc(dict.spikeBadge)}</span>` : ''}
                   <span class="turn-mini-val">${esc(fmtTokens(tv))}</span>
                 </div>
               `;
@@ -730,7 +672,7 @@
             <div class="s-row" title="${esc(hoverTip)}">
               <span class="s-marker" aria-hidden="true"></span>
               <span class="s-title">${esc(fullSession.title)}</span>
-              ${reloadBadgeHtml}
+              ${wasteTagHtml}
               <div class="s-bar">
                 <div class="s-bar-fill" style="width:${barPct}%"></div>
               </div>
@@ -762,8 +704,8 @@
   function renderAll() {
     renderChrome();
     renderHeaderStatus();
-    renderQuotaZones();
-    renderCacheHealthZone();
+    renderQuotaStripZone();
+    renderAuditZone();
     renderSessionsZone();
   }
 
